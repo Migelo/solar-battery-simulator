@@ -3463,8 +3463,8 @@ def main():
 
         # Create visualizations and analysis
         # simulator.create_power_flow_visualization(days_to_show=7)
-        _ = simulator.create_monthly_analysis()
-        simulator.create_monthly_solar_daily_plot()
+        # _ = simulator.create_monthly_analysis()  # TODO: implement
+        # simulator.create_monthly_solar_daily_plot()  # TODO: implement
         simulator.export_results()
 
         print("\nSimulation complete!")
