@@ -166,6 +166,7 @@ class PowerFlowSimulator:
         min_soc_reserve: float = 0.2,
         max_power_threshold: float = None,
         max_power_by_block: dict[int, float] = None,
+        heating_config: dict = None,
     ):
         """
         Initialize the power flow simulator
@@ -184,6 +185,10 @@ class PowerFlowSimulator:
             ove_spte_fee (float): OVE-SPTE fee rate in EUR/kW/month (default: 3.44078)
             peak_price (float): Peak hour electricity price in EUR/kWh (6am-10pm weekdays)
             off_peak_price (float): Off-peak hour electricity price in EUR/kWh (nights and weekends)
+            heating_config (dict): Heating load configuration with keys:
+                - heating_kwh (float): Total heating energy for season in kWh
+                - start_hour (int): Daily start hour (default: 7)
+                - end_hour (int): Daily end hour (0 = midnight, default: 0)
         """
         # System specifications
         self.solar_panel_power_kw = solar_panel_power_kw
@@ -253,6 +258,9 @@ class PowerFlowSimulator:
             }
         else:
             self.max_power_by_block = max_power_by_block
+
+        # Heating load configuration
+        self.heating_config = heating_config
 
         # Baseline system (from the data files)
         self.baseline_solar_kw = 640.6  # 640.6kW solar installation
@@ -391,6 +399,73 @@ class PowerFlowSimulator:
         )
         print(f"Max baseline solar output: {self.df['baseline_solar_kw'].max():.1f} kW")
         print(f"Total consumption: {self.df['consumption_kwh'].sum():.1f} kWh/year")
+
+        # Apply heating load if configured
+        self.apply_heating_load()
+
+    def apply_heating_load(self) -> None:
+        """
+        Add synthetic heating load to consumption during heating season (Oct-Mar).
+
+        Distributes total heating energy across winter months with weighted factors
+        based on typical Slovenian climate patterns. Energy is spread across
+        specified daily hours within each month.
+
+        Monthly distribution factors (normalized to sum = 6.6):
+            - January: 1.5 (coldest)
+            - February: 1.4
+            - December: 1.3
+            - November: 1.0
+            - March: 0.8
+            - October: 0.6 (mildest)
+        """
+        if self.heating_config is None:
+            return
+
+        heating_kwh = self.heating_config.get("heating_kwh", 3333)
+        start_hour = self.heating_config.get("start_hour", 7)
+        end_hour = self.heating_config.get("end_hour", 0)  # 0 = midnight
+
+        # Monthly heating factors
+        heating_factors = {
+            10: 0.6,   # October
+            11: 1.0,   # November
+            12: 1.3,   # December
+            1: 1.5,    # January (coldest)
+            2: 1.4,    # February
+            3: 0.8,    # March
+        }
+
+        total_factor = sum(heating_factors.values())  # 6.6
+        base_monthly_kwh = heating_kwh / total_factor
+
+        print(f"\nApplying heating load: {heating_kwh} kWh total (Oct-Mar)")
+        print(f"  Daily hours: {start_hour}:00 - {'midnight' if end_hour == 0 else f'{end_hour}:00'}")
+
+        for month, factor in heating_factors.items():
+            month_kwh = base_monthly_kwh * factor
+
+            # Build mask for this month during heating hours
+            if end_hour == 0:  # Midnight case
+                mask = (self.df["month"] == month) & (self.df["hour"] >= start_hour)
+            else:
+                mask = (
+                    (self.df["month"] == month)
+                    & (self.df["hour"] >= start_hour)
+                    & (self.df["hour"] < end_hour)
+                )
+
+            intervals = mask.sum()
+            if intervals > 0:
+                kwh_per_interval = month_kwh / intervals
+                kw_per_interval = kwh_per_interval * 4  # 15-min intervals → kW
+
+                self.df.loc[mask, "consumption_kwh"] += kwh_per_interval
+                self.df.loc[mask, "consumption_kw"] += kw_per_interval
+
+                print(f"  {month:02d}: {month_kwh:6.1f} kWh across {intervals:4d} intervals")
+
+        print(f"  New total consumption: {self.df['consumption_kwh'].sum():.1f} kWh/year")
 
     def scale_solar_generation(self) -> None:
         """Scale solar generation from baseline system to user-specified system"""
@@ -844,11 +919,7 @@ class PowerFlowSimulator:
         # Calculate costs with battery system using transmission block pricing
         def get_transmission_cost(row):
             block_num = int(row["transmission_block"])
-            return (
-                self.transmission_costs[f"block{block_num}"]
-                if f"block{block_num}" in self.transmission_costs
-                else 0.0
-            )
+            return self.transmission_costs.get(f"block{block_num}", 0.0)
 
         # Grid import cost with time-based and transmission block pricing
         def get_total_price(row):
@@ -874,7 +945,7 @@ class PowerFlowSimulator:
         export_revenue = self.simulation_results["grid_export_kwh"].sum() * export_price
 
         # Calculate block-wise max power for monthly fees
-        max_power_by_block = self.calculate_block_power_grid_import()
+        max_power_by_block = self.calculate_block_power("grid_import_kwh")
         self.max_power_by_block_simulated = max_power_by_block
 
         # Calculate OVE-SPTE cost
@@ -902,7 +973,7 @@ class PowerFlowSimulator:
         ).sum()
 
         # Calculate block-wise max power for monthly fees
-        max_power_by_block = self.calculate_block_power_consumption()
+        max_power_by_block = self.calculate_block_power("consumption_kwh")
         self.max_power_by_block_baseline = max_power_by_block
 
         # Calculate baseline OVE-SPTE cost (consumption without any generation)
@@ -1035,43 +1106,20 @@ class PowerFlowSimulator:
 
         return block_analysis
 
-    def calculate_block_power_grid_import(self, debug: bool = False) -> dict[str, float]:
+    def calculate_block_power(self, column: str, debug: bool = False) -> dict[str, float]:
         """
         Calculate the maximum power for each block.
-        """
-        block_power = {}
-        for block in [1, 2, 3, 4, 5]:
-            block_data = self.simulation_results[
-                self.simulation_results["transmission_block"] == block
-            ]
-            # block_data = self.df[self.df['transmission_block'] == block]
-            max_power_kw = (
-                block_data["grid_import_kwh"].max() * 4 if len(block_data) > 0 else 99999999
-            )
-            block_power[f"block_{block}"] = max_power_kw
-            if block > 1:
-                # Ensure max power ordering: Block 1 <= Block 2 <= Block 3 <= Block 4 <= Block 5
-                previous_block_power = block_power[f"block_{block - 1}"]
-                if max_power_kw < previous_block_power:
-                    max_power_kw = previous_block_power
-                    block_power[f"block_{block}"] = max_power_kw
-        if debug:
-            print("Block Power (kW):", block_power)
-        return block_power
 
-    def calculate_block_power_consumption(self, debug: bool = False) -> dict[str, float]:
-        """
-        Calculate the maximum power for each block.
+        Args:
+            column: The column to calculate max power from ("grid_import_kwh" or "consumption_kwh")
+            debug: Whether to print debug information
         """
         block_power = {}
         for block in [1, 2, 3, 4, 5]:
-            # block_data = self.df[self.df['transmission_block'] == block]
             block_data = self.simulation_results[
                 self.simulation_results["transmission_block"] == block
             ]
-            max_power_kw = (
-                block_data["consumption_kwh"].max() * 4 if len(block_data) > 0 else 99999999
-            )
+            max_power_kw = block_data[column].max() * 4 if len(block_data) > 0 else 99999999
             block_power[f"block_{block}"] = max_power_kw
             if block > 1:
                 # Ensure max power ordering: Block 1 <= Block 2 <= Block 3 <= Block 4 <= Block 5
@@ -1106,73 +1154,6 @@ class PowerFlowSimulator:
             "ove_spte_rate_eur_per_kw_per_month": self.ove_spte_fee,
             "annual_ove_spte_cost_eur": annual_ove_spte_cost,
         }
-
-    # def _calculate_baseline_ove_spte_cost(self, max_power_by_block: Dict[str, float]) -> float:
-    #     """Calculate OVE-SPTE cost for baseline scenario (grid consumption only)"""
-
-    #     # Convert kWh per 15-min interval to kW power
-    #     block1_max_power_kw = max_power_by_block['block_1')
-    #     block2_max_power_kw = max_power_by_block['block_2']
-
-    #     # Calculate weighted power and annual cost
-    #     weighted_power_kw = 4 * block1_max_power_kw + 8 * block2_max_power_kw
-    #     return weighted_power_kw * self.ove_spte_fee * 12
-
-    # def _calculate_baseline_monthly_power_fees(self) -> float:
-    #     """Calculate monthly power fees for baseline scenario (grid consumption only)"""
-    #     total_annual_power_fees = 0.0
-
-    #     # Calculate power fees for each block based on max consumption power
-    #     for block in [1, 2, 3, 4, 5]:
-    #         block_data = self.df[self.df['transmission_block'] == block]
-    #         if len(block_data) > 0:
-    #             # Convert kWh per 15-min interval to kW power
-    #             max_power_kw = block_data['consumption_kwh'].max() * 4
-    #             power_fee_rate = self.monthly_power_fees[f'block{block}']
-    #             monthly_power_fee = max_power_kw * power_fee_rate
-    #             annual_power_fee = monthly_power_fee * 12
-    #             total_annual_power_fees += annual_power_fee
-
-    #     return total_annual_power_fees
-
-    # def _calculate_solar_only_ove_spte_cost(self, solar_only_data) -> float:
-    #     """Calculate OVE-SPTE cost for solar-only scenario"""
-    #     # Add transmission_block to solar_only_data from original df
-    #     solar_only_data = solar_only_data.copy()
-    #     solar_only_data['transmission_block'] = self.df['transmission_block']
-
-    #     # Use grid import (not consumption) for OVE-SPTE calculation
-    #     block1_data = solar_only_data[solar_only_data['transmission_block'] == 1]
-    #     block2_data = solar_only_data[solar_only_data['transmission_block'] == 2]
-
-    #     # Convert kWh per 15-min interval to kW power
-    #     block1_max_power_kw = block1_data['import_kwh'].max() * 4 if len(block1_data) > 0 else 0
-    #     block2_max_power_kw = block2_data['import_kwh'].max() * 4 if len(block2_data) > 0 else 0
-
-    #     # Calculate weighted power and annual cost
-    #     weighted_power_kw = 4 * block1_max_power_kw + 8 * block2_max_power_kw
-    #     return weighted_power_kw * self.ove_spte_fee * 12
-
-    # def _calculate_solar_only_monthly_power_fees(self, solar_only_data) -> float:
-    #     """Calculate monthly power fees for solar-only scenario"""
-    #     # Add transmission_block to solar_only_data from original df
-    #     solar_only_data = solar_only_data.copy()
-    #     solar_only_data['transmission_block'] = self.df['transmission_block']
-
-    #     total_annual_power_fees = 0.0
-
-    #     # Calculate power fees for each block based on max grid import power
-    #     for block in [1, 2, 3, 4, 5]:
-    #         block_data = solar_only_data[solar_only_data['transmission_block'] == block]
-    #         if len(block_data) > 0:
-    #             # Convert kWh per 15-min interval to kW power
-    #             max_power_kw = block_data['import_kwh'].max() * 4
-    #             power_fee_rate = self.monthly_power_fees[f'block{block}']
-    #             monthly_power_fee = max_power_kw * power_fee_rate
-    #             annual_power_fee = monthly_power_fee * 12
-    #             total_annual_power_fees += annual_power_fee
-
-    #     return total_annual_power_fees
 
     def _calculate_monthly_power_fees(self, max_power_by_block: dict[str, float]) -> float:
         """Calculate monthly power fees for solar+battery scenario"""
@@ -1290,115 +1271,6 @@ class PowerFlowSimulator:
         print(f"Power flow visualization saved as 'power_flow_analysis_{days_to_show}days.png'")
         plt.close()
 
-    def create_monthly_analysis(self) -> pd.DataFrame | None:
-        """Create monthly energy flow analysis"""
-        if self.simulation_results is None:
-            print("No simulation results available. Run simulation first.")
-            return
-
-        print("\nCreating monthly analysis...")
-
-        # Add month to results
-        monthly_data = self.simulation_results.copy()
-        monthly_data["month"] = monthly_data["datetime"].dt.month
-
-        # Group by month
-        monthly_summary = (
-            monthly_data.groupby("month")
-            .agg(
-                {
-                    "solar_generation_kwh": "sum",
-                    "consumption_kwh": "sum",
-                    "grid_import_kwh": "sum",
-                    "grid_export_kwh": "sum",
-                    "battery_charge_kwh": "sum",
-                    "battery_discharge_kwh": "sum",
-                }
-            )
-            .round(1)
-        )
-
-        # Create visualization
-        fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(14, 10))
-
-        months = monthly_summary.index
-        month_names = [
-            "Jan",
-            "Feb",
-            "Mar",
-            "Apr",
-            "May",
-            "Jun",
-            "Jul",
-            "Aug",
-            "Sep",
-            "Oct",
-            "Nov",
-            "Dec",
-        ]
-
-        # Plot 1: Generation vs Consumption
-        x = np.arange(len(months))
-        width = 0.35
-
-        ax1.bar(
-            x - width / 2,
-            monthly_summary["solar_generation_kwh"],
-            width,
-            label="Solar Generation",
-            color="orange",
-            alpha=0.8,
-        )
-        ax1.bar(
-            x + width / 2,
-            monthly_summary["consumption_kwh"],
-            width,
-            label="Consumption",
-            color="blue",
-            alpha=0.8,
-        )
-
-        ax1.set_xlabel("Month")
-        ax1.set_ylabel("Energy (kWh)")
-        ax1.set_title("Monthly Solar Generation vs Consumption")
-        ax1.set_xticks(x)
-        ax1.set_xticklabels([month_names[i - 1] for i in months])
-        ax1.legend()
-        ax1.grid(True, alpha=0.3)
-
-        # Plot 2: Grid interaction
-        ax2.bar(
-            x - width / 2,
-            monthly_summary["grid_import_kwh"],
-            width,
-            label="Grid Import",
-            color="red",
-            alpha=0.8,
-        )
-        ax2.bar(
-            x + width / 2,
-            -monthly_summary["grid_export_kwh"],
-            width,
-            label="Grid Export",
-            color="purple",
-            alpha=0.8,
-        )
-
-        ax2.set_xlabel("Month")
-        ax2.set_ylabel("Energy (kWh)")
-        ax2.set_title("Monthly Grid Import/Export (Export shown as negative)")
-        ax2.set_xticks(x)
-        ax2.set_xticklabels([month_names[i - 1] for i in months])
-        ax2.legend()
-        ax2.grid(True, alpha=0.3)
-
-        plt.tight_layout()
-        plt.savefig("monthly_energy_analysis.png", dpi=300, bbox_inches="tight")
-        print("Monthly analysis saved as 'monthly_energy_analysis.png'")
-        plt.close()
-
-        return monthly_summary
-
     def export_results(self) -> None:
         """Export detailed results to CSV files"""
         if self.simulation_results is None:
@@ -1446,89 +1318,6 @@ class PowerFlowSimulator:
         summary_df.to_csv("system_summary.csv", index=False)
         print("System summary exported to 'system_summary.csv'")
 
-    def create_monthly_solar_daily_plot(self):
-        """
-        Create a plot showing daily solar production throughout each month.
-        One line per month, showing solar production from day 1 to end of month.
-        """
-        if self.simulation_results is None:
-            print("No simulation results available. Run simulation first.")
-            return
-
-        print("\nCreating monthly solar production plot...")
-
-        # Create a copy of simulation results with datetime parsing
-        plot_data = self.simulation_results.copy()
-        plot_data["datetime"] = pd.to_datetime(plot_data["datetime"])
-        plot_data["month"] = plot_data["datetime"].dt.month
-        plot_data["day"] = plot_data["datetime"].dt.day
-
-        # Group by month and day, sum daily solar production
-        daily_solar = (
-            plot_data.groupby(["month", "day"])["solar_generation_kwh"].sum().reset_index()
-        )
-
-        # Create the plot
-        plt.figure(figsize=(14, 10))
-
-        # Define colors for each month
-        colors = plt.cm.tab10(np.linspace(0, 1, 12))
-        month_names = [
-            "Jan",
-            "Feb",
-            "Mar",
-            "Apr",
-            "May",
-            "Jun",
-            "Jul",
-            "Aug",
-            "Sep",
-            "Oct",
-            "Nov",
-            "Dec",
-        ]
-
-        # Plot each month
-        for month in range(1, 13):
-            month_data = daily_solar[daily_solar["month"] == month]
-            if not month_data.empty:
-                plt.plot(
-                    month_data["day"],
-                    month_data["solar_generation_kwh"],
-                    label=month_names[month - 1],
-                    color=colors[month - 1],
-                    linewidth=2,
-                    alpha=0.8,
-                )
-
-        plt.xlabel("Day of Month", fontsize=12)
-        plt.ylabel("Daily Solar Production (kWh)", fontsize=12)
-        plt.title(
-            f"Daily Solar Production by Month\n{self.solar_panel_power_kw}kW Solar + {self.inverter_power_kw}kW Inverter",
-            fontsize=14,
-            fontweight="bold",
-        )
-        plt.legend(bbox_to_anchor=(1.05, 1), loc="upper left")
-        plt.grid(True, alpha=0.3)
-        plt.xlim(1, 31)
-
-        # Add some statistics
-        max_daily = daily_solar["solar_generation_kwh"].max()
-        avg_daily = daily_solar["solar_generation_kwh"].mean()
-        plt.text(
-            0.02,
-            0.98,
-            f"Max daily: {max_daily:.1f} kWh\nAvg daily: {avg_daily:.1f} kWh",
-            transform=plt.gca().transAxes,
-            verticalalignment="top",
-            bbox=dict(boxstyle="round", facecolor="wheat", alpha=0.8),
-        )
-
-        plt.tight_layout()
-        plt.savefig("monthly_solar_daily_production.png", dpi=300, bbox_inches="tight")
-        print("Monthly solar production plot saved as 'monthly_solar_daily_production.png'")
-        plt.close()
-
 
 # Standalone cached function for batch simulations
 @memory.cache
@@ -1550,9 +1339,13 @@ def _cached_batch_simulation_func(
     max_power_block1: float = 300.0,
     max_power_block2: float = 320.0,
     min_soc_reserve: float = 0.5,
+    heating_config_tuple: tuple = None,
 ) -> dict[str, Any]:
     """
     Standalone cached simulation function for batch mode to avoid re-running identical simulations.
+
+    Note: heating_config is passed as a tuple for cache hashability.
+    Format: (heating_kwh, start_hour, end_hour) or None
     """
     try:
         # Suppress all output for batch mode (including constructor)
@@ -1586,6 +1379,7 @@ def _cached_batch_simulation_func(
                     4: 2000.0,  # Use default
                     5: 2000.0,  # Use default
                 },
+                heating_config=dict(zip(["heating_kwh", "start_hour", "end_hour"], heating_config_tuple)) if heating_config_tuple else None,
             )
 
             # Run simulation
@@ -1717,6 +1511,7 @@ class MultiScenarioAnalyzer:
         enable_power_smoothing: bool = False,
         min_soc_reserve: float = 0.2,
         max_power_by_block: dict[int, float] = None,
+        heating_config: dict = None,
     ):
         """
         Multi-scenario analyzer for solar + battery systems
@@ -1739,6 +1534,10 @@ class MultiScenarioAnalyzer:
             loan_rate (float): Annual loan interest rate (default: 0.03 = 3%)
             loan_years (int): Loan term in years (default: 10)
             transmission_costs (Dict[str, float]): Transmission costs by block (block1-block5)
+            heating_config (dict): Heating load configuration with keys:
+                - heating_kwh (float): Total heating energy for season in kWh
+                - start_hour (int): Daily start hour (default: 7)
+                - end_hour (int): Daily end hour (0 = midnight, default: 0)
         """
         self.solar_range = solar_range or [5, 8.5, 10, 15, 20]
         self.inverter_range = inverter_range or [5, 8, 10, 15]
@@ -1781,6 +1580,9 @@ class MultiScenarioAnalyzer:
             4: 2000.0,
             5: 2000.0,
         }
+
+        # Heating load configuration
+        self.heating_config = heating_config
 
         self.scenarios = []
         self.results = []
@@ -1867,6 +1669,7 @@ class MultiScenarioAnalyzer:
             max_power_block1=self.max_power_by_block.get(1, 300.0),
             max_power_block2=self.max_power_by_block.get(2, 320.0),
             min_soc_reserve=self.min_soc_reserve,
+            heating_config_tuple=tuple(self.heating_config.get(k) for k in ["heating_kwh", "start_hour", "end_hour"]) if self.heating_config else None,
         )
 
     def run_all_scenarios(self) -> list[dict[str, Any]]:
@@ -2795,6 +2598,7 @@ class MultiScenarioAnalyzer:
                     max_power_block1=float(power_block_1),
                     max_power_block2=float(power_block_2),
                     min_soc_reserve=float(min_soc_reserve),
+                    heating_config_tuple=tuple(self.heating_config.get(k) for k in ["heating_kwh", "start_hour", "end_hour"]) if self.heating_config else None,
                 )
 
                 if result["simulation_failed"]:
@@ -3388,6 +3192,31 @@ def main():
         help="Polish the optimization result (default: True)",
     )
 
+    # Heating load arguments
+    parser.add_argument(
+        "--add-heating-load",
+        action="store_true",
+        help="Add synthetic heating load during winter months (Oct-Mar)",
+    )
+    parser.add_argument(
+        "--heating-kwh",
+        type=float,
+        default=3333,
+        help="Total heating energy per season in kWh (default: 3333)",
+    )
+    parser.add_argument(
+        "--heating-start-hour",
+        type=int,
+        default=7,
+        help="Daily heating start hour (default: 7)",
+    )
+    parser.add_argument(
+        "--heating-end-hour",
+        type=int,
+        default=0,
+        help="Daily heating end hour, 0=midnight (default: 0)",
+    )
+
     args = parser.parse_args()
 
     def parse_range(range_str):
@@ -3410,6 +3239,8 @@ def main():
             f"Electricity prices: €{args.peak_price:.3f}/kWh peak, €{args.off_peak_price:.3f}/kWh off-peak"
         )
         print(f"Export price: €{args.export_price:.3f}/kWh")
+        if args.add_heating_load:
+            print(f"Heating load: {args.heating_kwh} kWh/season, {args.heating_start_hour}:00-{'midnight' if args.heating_end_hour == 0 else f'{args.heating_end_hour}:00'}")
 
         # Parse parameter ranges
         solar_range = parse_range(args.solar_range)
@@ -3476,6 +3307,7 @@ def main():
             enable_power_smoothing=args.enable_power_smoothing,
             min_soc_reserve=args.min_soc_reserve,
             max_power_by_block=max_power_by_block if max_power_by_block else None,
+            heating_config={"heating_kwh": args.heating_kwh, "start_hour": args.heating_start_hour, "end_hour": args.heating_end_hour} if args.add_heating_load else None,
         )
 
         # Check if optimization is requested
@@ -3516,6 +3348,8 @@ def main():
         print(
             f"Solar: {args.solar_power}kW, Inverter: {args.inverter_power}kW, Battery: {args.battery_capacity}kWh"
         )
+        if args.add_heating_load:
+            print(f"Heating load: {args.heating_kwh} kWh/season, {args.heating_start_hour}:00-{'midnight' if args.heating_end_hour == 0 else f'{args.heating_end_hour}:00'}")
 
         # Create transmission costs dictionary from arguments
         transmission_costs = {
@@ -3572,6 +3406,7 @@ def main():
                 }.items()
                 if v is not None
             },
+            heating_config={"heating_kwh": args.heating_kwh, "start_hour": args.heating_start_hour, "end_hour": args.heating_end_hour} if args.add_heating_load else None,
         )
 
         # Run simulation
