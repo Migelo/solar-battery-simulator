@@ -652,9 +652,6 @@ def index():
         # ==================================================================
         with ui.tab_panel(single_tab):
             single_inputs = {}
-            single_results = ui.column().classes("w-full")
-            single_spinner = ui.spinner("dots", size="xl")
-            single_spinner.visible = False
 
             with ui.splitter(value=25).classes("w-full").style("min-height: calc(100vh - 160px)") as splitter:
                 with splitter.before:
@@ -689,18 +686,16 @@ def index():
                             _heating_section(single_inputs)
 
                 with splitter.after:
-                    with ui.column().classes("q-pa-md w-full"):
-                        single_spinner
-                        single_results
+                    with ui.scroll_area().classes("w-full").style("height: calc(100vh - 170px)"):
+                        single_spinner = ui.spinner("dots", size="xl")
+                        single_spinner.visible = False
+                        single_results = ui.column().classes("w-full")
 
         # ==================================================================
         # BATCH ANALYSIS TAB
         # ==================================================================
         with ui.tab_panel(batch_tab):
             batch_inputs = {}
-            batch_results = ui.column().classes("w-full")
-            batch_spinner = ui.spinner("dots", size="xl")
-            batch_spinner.visible = False
 
             with ui.splitter(value=25).classes("w-full").style("min-height: calc(100vh - 160px)") as splitter:
                 with splitter.before:
@@ -756,9 +751,10 @@ def index():
                             _heating_section(batch_inputs)
 
                 with splitter.after:
-                    with ui.column().classes("q-pa-md w-full"):
-                        batch_spinner
-                        batch_results
+                    with ui.scroll_area().classes("w-full").style("height: calc(100vh - 170px)"):
+                        batch_spinner = ui.spinner("dots", size="xl")
+                        batch_spinner.visible = False
+                        batch_results = ui.column().classes("w-full")
 
 
 if __name__ in {"__main__", "__mp_main__"}:
