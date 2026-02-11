@@ -4,142 +4,144 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-This is a Python-based electricity consumption and solar battery storage analysis tool. The project analyzes electricity usage data (from Slovenian smart meters) to simulate and optimize battery storage systems with varying solar panel capacities.
+Python-based solar PV + battery storage simulation tool. Analyzes electricity consumption data from Slovenian smart meters to simulate and optimize battery storage systems, modeling cost savings, ROI, NPV, and system sizing at 15-minute intervals.
 
-## Environment Setup
+## Common Commands
 
-- Python 3.13 with virtual environment located at `.venv/`
-- Activate virtual environment: `source .venv/bin/activate`
-- Required packages: pandas, numpy, matplotlib, seaborn (already installed in venv)
-
-## Core Architecture
-
-### Main Components
-
-**BatterySimulator Class** (`battery_simulator.py:16`)
-- Primary simulation engine that models battery storage behavior
-- Handles electricity pricing (peak vs off-peak rates)
-- Simulates 15-minute interval battery charge/discharge cycles
-- Battery parameters: 100% round-trip efficiency (configurable), 0.5C charge/discharge rates
-- Supports optional off-peak charging strategy
-
-**Data Processing** (`battery_simulator.py:42`)
-- Processes CSV data from Slovenian smart meters with columns: timestamp, grid import (A+), solar export (A-)
-- Handles electricity pricing tiers: €0.23/kWh (peak: 6am-10pm weekdays), €0.18/kWh (off-peak)
-- Supports solar scaling factors to model different solar panel capacities
-
-**Analysis Functions**
-- `run_capacity_analysis()`: Tests battery capacities from 1-20 kWh by default (`battery_simulator.py:201`)
-- `run_solar_scaling_analysis()`: Models 1x to 5x solar capacity scaling (`battery_simulator.py:217`)
-- `simulate_battery()`: Core simulation logic with SOC tracking and cost calculations (`battery_simulator.py:89`)
-- `create_savings_heatmap()`: Generates heatmap visualization of savings across battery/solar combinations (`battery_simulator.py:393`)
-- `create_roi_heatmap()`: Creates ROI payback period analysis with customizable equipment costs (`battery_simulator.py:444`)
-
-### Key Algorithms
-
-**Battery Operation Logic** (`battery_simulator.py:108`)
-1. Off-peak charging: When enabled, proactively charges to 80% SOC during off-peak hours (`battery_simulator.py:116`)
-2. Solar surplus charging: Charges battery with available solar surplus (accounting for efficiency losses)
-3. Energy demand: Discharges battery first, then imports from grid as needed
-4. SOC bounds enforcement and charge/discharge rate limiting (0.5C rates)
-5. Cost calculation using time-of-use pricing
-
-**Analysis Outputs**
-- Annual cost savings calculations vs baseline (no battery)
-- Battery utilization metrics (average/min/max SOC, annual cycles)
-- ROI analysis with customizable equipment costs
-- Time-series visualization of daily maximum SOC
-
-## Running the Analysis
-
-**Execute scripts using uv:**
 ```bash
-uv run power_flow_simulator.py
-uv run battery_simulator.py
+# Run the GUI (NiceGUI web app on http://localhost:8080)
+uv run gui.py
+
+# Run the simulator CLI (single scenario)
+uv run power_flow_simulator.py --solar-power 15 --battery-capacity 20
+
+# Run the simulator CLI (batch mode)
+uv run power_flow_simulator.py --batch-mode --solar-range 10,15,20 --battery-range 0,10,20 --inverter-range 8,10,15
+
+# Run with Docker Compose (place CSV files in data/)
+docker compose up --build
+
+# Run all tests
+uv run pytest
+
+# Run a single test file
+uv run pytest tests/test_simulation.py
+
+# Run a specific test
+uv run pytest tests/test_simulation.py::test_energy_conservation -v
+
+# Lint and format
+uv run ruff check .
+uv run ruff format .
+
+# Type checking
+uv run mypy power_flow_simulator.py
+
+# Pre-commit hooks (install once, then runs automatically)
+pre-commit install
+pre-commit run --all-files
+
+# Install dependencies including test extras
+uv sync --extra test
 ```
 
-**Optional command line arguments:**
+## Architecture
+
+**`gui.py`** — NiceGUI web frontend with two tabs (Single Scenario / Batch Analysis). Key design decisions:
+- Runs simulations via `asyncio.to_thread` to keep the UI responsive
+- Matplotlib plots use a scoped dark theme (`_GUI_PLOT_RC` via `plt.rc_context`) — does **not** mutate global rcParams, so CLI plots in `power_flow_simulator.py` are unaffected
+- Plots rendered as inline base64 `<img>` tags (not `ui.image()` which collapses in dynamic tab panels)
+- Batch analysis shows a live progress bar polling `len(analyzer.results)` via `ui.timer`
+- Dark mode preference persisted in `app.storage.user` (server-side) — `ui.dark_mode()` and `ui.switch()` both bound via `bind_value`; `app.storage.browser` is cookie-based and becomes read-only after HTTP response, so it cannot persist WebSocket-driven changes
+- Data file lookup: uploaded files → `data/` subdir → working directory
+- `ui.run()` guarded with `if __name__ in {"__main__", "__mp_main__"}` for test compatibility
+- Sidebar uses `ui.scroll_area` with explicit `height: calc(100vh - 170px)` for scrolling
+
+**`power_flow_simulator.py`** (~3,500 lines) — all simulation logic.
+
+### Two Main Classes
+
+**`PowerFlowSimulator`** — Single scenario simulation engine
+- `load_and_align_data()`: Loads `production.csv` (solar baseline) and `consumption.csv` (usage), parses timestamps, adds time features (hour, weekday, month, holiday, transmission block)
+- `apply_heating_load()`: Optional synthetic heat pump load (Oct–Mar) with monthly weighting factors
+- `scale_solar_generation()`: Scales from 640.6 kW baseline to target capacity, applies inverter clipping
+- `simulate_power_flows()`: Core 15-minute loop — manages battery charge/discharge, grid import/export, optional power smoothing (peak shaving)
+- `calculate_costs_and_savings()`: Economic analysis with 5-block transmission costs, monthly power fees, OVE-SPTE weighted costs
+
+**`MultiScenarioAnalyzer`** — Batch analysis across parameter combinations
+- Generates all valid (solar × inverter × battery) scenarios (constraint: inverter ≤ solar)
+- Runs each through `PowerFlowSimulator` with joblib caching (`_cached_batch_simulation_func`)
+- Calculates ROI, NPV (20-year), payback periods, loan amortization
+- Produces heatmap visualizations (savings, ROI, self-sufficiency, Pareto)
+- `optimize_npv_differential_evolution()`: scipy-based optimization for optimal system configuration
+
+### Simulation Data Flow
+
+1. Load CSVs → aligned DataFrame (35,040 rows/year = 4 intervals/hr × 24hr × 365 days)
+2. Optional: add heating load to consumption
+3. Scale solar from baseline, apply inverter clipping
+4. Per-interval loop: net demand → battery charge/discharge → grid import/export → SOC tracking
+5. Calculate costs: baseline (grid-only) vs solar+battery scenario → savings
+
+### Key Battery Logic
+
+Each 15-min interval: surplus solar charges battery (respecting C-rate and efficiency losses), deficit discharges battery first then imports from grid. Power smoothing optionally uses battery reserve to reduce peak grid demand below configurable thresholds.
+
+### Slovenian Tariff System
+
+5-block transmission costs vary by season (high: Nov–Mar, low: Mar–Nov) and workday/time-of-day. Block 1 is most expensive (high season weekday peak hours), Block 3 cheapest. Monthly power fees are charged per kW per block. OVE-SPTE fee uses weighted formula: `4 × Block1_max_power + 8 × Block2_max_power`.
+
+## Input Data
+
+Two CSV files required (looked up in uploaded files first, then `data/` subdir, then working directory):
+- `production.csv`: Solar generation baseline (timestamp_id, solar_power_kw)
+- `consumption.csv`: Electricity usage (Time, Energy kWh, Power kW, Transmission fee block)
+
+Both files exist in the repository root and are auto-detected by the GUI.
+
+## Docker Deployment
+
+`docker compose up --build` builds and runs the GUI on port 8080. Place `production.csv` and `consumption.csv` in a `data/` directory — it is volume-mounted into the container at `/app/data`. The `Dockerfile` uses uv and copies only `pyproject.toml`, `uv.lock`, `power_flow_simulator.py`, and `gui.py`.
+
+## Code Quality
+
+- **Formatter/linter**: Ruff (line-length 100, target py313). `gui.py` has per-file-ignores for B018/SIM117 (NiceGUI widget context managers)
+- **Type checker**: mypy (with pandas-stubs, types-seaborn)
+- **Pre-commit hooks**: trailing whitespace, ruff lint+format, mypy
+- **CI**: GitHub Actions runs `uv run pytest --tb=short -v` on push/PR to main
+- Python ≥3.12 required; pyproject.toml targets py313
+
+## Test Structure
+
+56 tests in `tests/` using pytest with fixtures in `conftest.py`:
+- `test_simulation.py`: Energy conservation, battery bounds, solar surplus, grid constraints
+- `test_costs.py`: Baseline costs, time-of-use pricing
+- `test_heating_load.py`: Energy distribution, monthly weighting, edge cases
+- `test_integration.py`: Full pipeline, determinism, edge cases (zero solar/consumption), MultiScenarioAnalyzer
+- `test_gui.py`: GUI unit tests + NiceGUI `User` fixture tests (page structure, tabs, inputs)
+
+GUI tests use `nicegui.testing.user_plugin` (headless, no browser needed). Config in `pyproject.toml`: `asyncio_mode = "auto"`, `main_file = "gui.py"`.
+
+3 expected warnings on zero-division in edge case tests (cosmetic, in print statements).
+
+## Visual GUI Debugging with Playwright MCP
+
+The Playwright MCP plugin can be used for interactive visual testing and debugging of the GUI. Start the server first, then use Playwright tools to navigate, click, take screenshots, and inspect the page.
+
 ```bash
-# Enable off-peak charging (battery charges during nights/weekends)
-python3 battery_simulator.py --off-peak-charging
+# 1. Start the GUI server
+uv run gui.py
 
-# Custom electricity prices (EUR/kWh)
-python3 battery_simulator.py --peak-price 0.25 --off-peak-price 0.15
-
-# Combined options with custom prices
-python3 battery_simulator.py --off-peak-charging --peak-price 0.30 --off-peak-price 0.12
-
-# Uses default transmission costs (€0.01809-0.01998/kWh range)
-python3 battery_simulator.py --peak-price 0.119900 --off-peak-price 0.097900
-
-# Custom transmission costs override defaults
-python3 battery_simulator.py --peak-price 0.119900 --off-peak-price 0.097900 \
-  --transmission-block1 0.025 --transmission-block3 0.015
+# 2. Use Playwright MCP tools:
+#    - browser_navigate to http://localhost:8080
+#    - browser_snapshot for accessibility tree (preferred for actions)
+#    - browser_take_screenshot for visual verification
+#    - browser_click / browser_type to interact with elements
 ```
 
-**Available command line options:**
-- `--off-peak-charging`: Enable proactive battery charging during off-peak hours
-- `--peak-price PRICE`: Peak hour electricity price in EUR/kWh (default: 0.23)
-- `--off-peak-price PRICE`: Off-peak hour electricity price in EUR/kWh (default: 0.18)
-- `--transmission-block1 COST`: Block 1 transmission cost in EUR/kWh (default: 0.01998)
-- `--transmission-block2 COST`: Block 2 transmission cost in EUR/kWh (default: 0.01833)
-- `--transmission-block3 COST`: Block 3 transmission cost in EUR/kWh (default: 0.01809)
-- `--transmission-block4 COST`: Block 4 transmission cost in EUR/kWh (default: 0.01855)
-- `--transmission-block5 COST`: Block 5 transmission cost in EUR/kWh (default: 0.01873)
+**Setup**: The Playwright MCP plugin is configured to use system Chromium (`/usr/bin/chromium-browser`) since Chrome is not installed. Config is in `~/.claude/plugins/marketplaces/claude-plugins-official/external_plugins/playwright/.mcp.json` with `--browser chromium --executable-path /usr/bin/chromium-browser`.
 
-**Key input requirements:**
-- `data.csv`: Smart meter data with columns including 'Časovna značka', 'Energija A+', 'Energija A-'
-- Data format: 15-minute intervals with timestamp, grid import/export values in kWh
-
-**Generated outputs:**
-- Multiple PNG visualization files showing SOC comparisons, heatmaps
-- `battery_capacity_analysis.csv`: Summary results for all tested capacities
-- `battery_operation_*kwh.csv`: Detailed operation logs for optimal battery size
-
-## Data Structure
-
-The CSV data represents Slovenian smart meter readings:
-- `Časovna značka`: Timestamp in 15-minute intervals
-- `Energija A+`: Energy imported from grid (kWh)
-- `Energija A-`: Energy exported to grid (kWh, from solar panels)
-- Analysis spans full year of data for accurate seasonal modeling
-
-## Visualization Components
-
-- Daily SOC tracking plots for multiple battery capacities
-- Solar scaling analysis with different panel capacities  
-- ROI heatmaps showing payback periods
-- Cost savings heatmaps across battery/solar combinations
-
-## Transmission Cost System
-
-The simulator supports a sophisticated 5-block transmission cost system with seasonal and workday/non-workday variations:
-
-**Time Blocks with Default Pricing:**
-- **Block 1** (€0.01998/kWh): Most expensive, only high season workdays, 7h-14h and 16h-20h
-- **Block 2** (€0.01833/kWh): High season all days, low season workdays, 7h-14h and 16h-20h  
-- **Block 3** (€0.01809/kWh): Cheapest rate, various time periods
-- **Block 4** (€0.01855/kWh): Various time periods
-- **Block 5** (€0.01873/kWh): Only low season non-workdays, midnight-6h and 22h-midnight
-
-**Seasons:**
-- **High season**: November 1st to March 1st (winter heating season)
-- **Low season**: March 1st to November 1st (rest of year)
-
-**Time Periods by Block:**
-- **7h-14h, 16h-20h**: Peak demand periods (blocks 1-3 depending on season/workday)
-- **6h-7h, 14h-16h, 20h-22h**: Medium demand periods (blocks 2-4)
-- **Midnight-6h, 22h-midnight**: Low demand periods (blocks 3-5)
-
-## Specific Generated Files
-
-**Visualization Files (PNG):**
-- `daily_max_soc_comparison_*kwh.png`: Daily max SOC over time for different battery capacities
-- `solar_scaling_soc_*kwh_*x.png`: SOC comparison across different solar scale factors
-- `solar_battery_savings_heatmap.png`: Annual savings across battery/solar combinations
-- `solar_battery_roi_heatmap.png`: ROI payback periods with investment cost assumptions
-
-**Data Files (CSV):**
-- `battery_capacity_analysis.csv`: Summary results for all tested battery capacities
-- `battery_operation_*kwh.csv`: Detailed 15-minute interval logs for specific battery sizes
-- add the blocks
+**Tips**:
+- Use `browser_snapshot` (not screenshots) to get element refs for clicking/typing
+- If Chromium fails to launch with "Opening in existing browser session", kill stale processes: `pkill -f "chromium-browser.*mcp-chromium"`
+- The plugin config is in the plugin cache and may be overwritten on plugin updates — re-apply the chromium config if that happens
