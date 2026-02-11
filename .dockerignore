@@ -1,0 +1,13 @@
+.venv/
+__pycache__/
+*.pyc
+.cache/
+.git/
+.github/
+tests/
+*.png
+*.csv
+!data/*.csv
+.pre-commit-config.yaml
+.mypy_cache/
+.ruff_cache/
