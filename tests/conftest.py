@@ -11,6 +11,9 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from power_flow_simulator import PowerFlowSimulator
 
+# Activate NiceGUI headless testing (no browser required)
+pytest_plugins = ["nicegui.testing.user_plugin"]
+
 
 @pytest.fixture
 def minimal_production_csv(tmp_path):

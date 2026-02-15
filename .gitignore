@@ -1,0 +1,11 @@
+__pycache__/
+*.pyc
+.venv/
+.cache/
+.pytest_cache/
+.ruff_cache/
+.playwright-mcp/
+.nicegui/
+*.png
+*.jpg
+multi_scenario_comparison.csv
