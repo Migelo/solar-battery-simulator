@@ -1,10 +1,11 @@
 """Shared test fixtures for power flow simulator tests."""
 
-import pytest
-import pandas as pd
-import numpy as np
-from pathlib import Path
 import sys
+from pathlib import Path
+
+import numpy as np
+import pandas as pd
+import pytest
 
 # Add parent directory to path for imports
 sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -24,12 +25,9 @@ def minimal_production_csv(tmp_path):
     solar_kw = np.maximum(0, 10 * np.sin((hours - 6) * np.pi / 12))
     solar_kw[hours < 6] = 0
     solar_kw[hours >= 18] = 0
-    
-    df = pd.DataFrame({
-        'timestamp_id': range(1, 97),
-        'solar_power_kw': solar_kw
-    })
-    
+
+    df = pd.DataFrame({"timestamp_id": range(1, 97), "solar_power_kw": solar_kw})
+
     path = tmp_path / "production.csv"
     df.to_csv(path, index=False)
     return path
@@ -39,14 +37,18 @@ def minimal_production_csv(tmp_path):
 def minimal_consumption_csv(tmp_path):
     """Create minimal consumption CSV with 96 intervals (1 day)."""
     # Constant 2 kW load = 0.5 kWh per 15-min interval
-    df = pd.DataFrame({
-        'datetime': pd.date_range('2024-01-15 00:15:00', periods=96, freq='15min').strftime('%d. %m. %Y %H:%M:%S'),
-        'energy_kwh': [0.5] * 96,
-        'power_kw': [2.0] * 96,
-        'transmission_block': [3] * 96,  # Block 3 for simplicity
-        'extra': [''] * 96
-    })
-    
+    df = pd.DataFrame(
+        {
+            "datetime": pd.date_range("2024-01-15 00:15:00", periods=96, freq="15min").strftime(
+                "%d. %m. %Y %H:%M:%S"
+            ),
+            "energy_kwh": [0.5] * 96,
+            "power_kw": [2.0] * 96,
+            "transmission_block": [3] * 96,  # Block 3 for simplicity
+            "extra": [""] * 96,
+        }
+    )
+
     path = tmp_path / "consumption.csv"
     df.to_csv(path, index=False)
     return path
@@ -57,14 +59,18 @@ def winter_consumption_csv(tmp_path):
     """Create consumption CSV spanning heating months (Jan) for heating load tests."""
     # 4 days in January
     n_intervals = 96 * 4
-    df = pd.DataFrame({
-        'datetime': pd.date_range('2024-01-01 00:15:00', periods=n_intervals, freq='15min').strftime('%d. %m. %Y %H:%M:%S'),
-        'energy_kwh': [0.5] * n_intervals,
-        'power_kw': [2.0] * n_intervals,
-        'transmission_block': [3] * n_intervals,
-        'extra': [''] * n_intervals
-    })
-    
+    df = pd.DataFrame(
+        {
+            "datetime": pd.date_range(
+                "2024-01-01 00:15:00", periods=n_intervals, freq="15min"
+            ).strftime("%d. %m. %Y %H:%M:%S"),
+            "energy_kwh": [0.5] * n_intervals,
+            "power_kw": [2.0] * n_intervals,
+            "transmission_block": [3] * n_intervals,
+            "extra": [""] * n_intervals,
+        }
+    )
+
     path = tmp_path / "consumption.csv"
     df.to_csv(path, index=False)
     return path
@@ -78,12 +84,9 @@ def winter_production_csv(tmp_path):
     solar_kw = np.maximum(0, 10 * np.sin((hours - 6) * np.pi / 12))
     solar_kw[hours < 6] = 0
     solar_kw[hours >= 18] = 0
-    
-    df = pd.DataFrame({
-        'timestamp_id': range(1, n_intervals + 1),
-        'solar_power_kw': solar_kw
-    })
-    
+
+    df = pd.DataFrame({"timestamp_id": range(1, n_intervals + 1), "solar_power_kw": solar_kw})
+
     path = tmp_path / "production.csv"
     df.to_csv(path, index=False)
     return path
@@ -130,10 +133,10 @@ def simulator_with_heating(winter_production_csv, winter_consumption_csv):
         production_file=str(winter_production_csv),
         consumption_file=str(winter_consumption_csv),
         heating_config={
-            'heating_kwh': 1000.0,
-            'start_hour': 7,
-            'end_hour': 0,  # midnight
-        }
+            "heating_kwh": 1000.0,
+            "start_hour": 7,
+            "end_hour": 0,  # midnight
+        },
     )
     sim.load_and_align_data()
     sim.scale_solar_generation()

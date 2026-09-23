@@ -428,19 +428,21 @@ class PowerFlowSimulator:
 
         # Monthly heating factors
         heating_factors = {
-            10: 0.6,   # October
-            11: 1.0,   # November
-            12: 1.3,   # December
-            1: 1.5,    # January (coldest)
-            2: 1.4,    # February
-            3: 0.8,    # March
+            10: 0.6,  # October
+            11: 1.0,  # November
+            12: 1.3,  # December
+            1: 1.5,  # January (coldest)
+            2: 1.4,  # February
+            3: 0.8,  # March
         }
 
         total_factor = sum(heating_factors.values())  # 6.6
         base_monthly_kwh = heating_kwh / total_factor
 
         print(f"\nApplying heating load: {heating_kwh} kWh total (Oct-Mar)")
-        print(f"  Daily hours: {start_hour}:00 - {'midnight' if end_hour == 0 else f'{end_hour}:00'}")
+        print(
+            f"  Daily hours: {start_hour}:00 - {'midnight' if end_hour == 0 else f'{end_hour}:00'}"
+        )
 
         for month, factor in heating_factors.items():
             month_kwh = base_monthly_kwh * factor
@@ -761,8 +763,6 @@ class PowerFlowSimulator:
 
         # Battery utilization
         avg_soc = self.simulation_results["battery_soc_percent"].mean()
-        min_soc = self.simulation_results["battery_soc_percent"].min()
-        max_soc = self.simulation_results["battery_soc_percent"].max()
 
         # Estimate annual cycles
         total_throughput = total_battery_charge + total_battery_discharge
@@ -1362,7 +1362,8 @@ def _cached_batch_simulation_func(
                 solar_panel_power_kw=solar_kw,
                 inverter_power_kw=inverter_kw,
                 battery_capacity_kwh=battery_kwh,
-                battery_c_rate=0.5,
+                battery_charge_power_kw=battery_charge_power_kw,
+                battery_discharge_power_kw=battery_discharge_power_kw,
                 battery_efficiency=battery_efficiency,
                 production_file=production_file,
                 consumption_file=consumption_file,
@@ -1379,7 +1380,15 @@ def _cached_batch_simulation_func(
                     4: 2000.0,  # Use default
                     5: 2000.0,  # Use default
                 },
-                heating_config=dict(zip(["heating_kwh", "start_hour", "end_hour"], heating_config_tuple)) if heating_config_tuple else None,
+                heating_config=dict(
+                    zip(
+                        ["heating_kwh", "start_hour", "end_hour"],
+                        heating_config_tuple,
+                        strict=False,
+                    )
+                )
+                if heating_config_tuple
+                else None,
             )
 
             # Run simulation
@@ -1669,7 +1678,11 @@ class MultiScenarioAnalyzer:
             max_power_block1=self.max_power_by_block.get(1, 300.0),
             max_power_block2=self.max_power_by_block.get(2, 320.0),
             min_soc_reserve=self.min_soc_reserve,
-            heating_config_tuple=tuple(self.heating_config.get(k) for k in ["heating_kwh", "start_hour", "end_hour"]) if self.heating_config else None,
+            heating_config_tuple=tuple(
+                self.heating_config.get(k) for k in ["heating_kwh", "start_hour", "end_hour"]
+            )
+            if self.heating_config
+            else None,
         )
 
     def run_all_scenarios(self) -> list[dict[str, Any]]:
@@ -2153,7 +2166,7 @@ class MultiScenarioAnalyzer:
             return
 
         # Get unique battery capacities and sort them
-        battery_capacities = sorted(list(set(r["battery_capacity_kwh"] for r in battery_results)))
+        battery_capacities = sorted({r["battery_capacity_kwh"] for r in battery_results})
 
         # Create subplots - one for each battery capacity
         n_capacities = len(battery_capacities)
@@ -2296,17 +2309,12 @@ class MultiScenarioAnalyzer:
             solar_inverter_combinations.add(combo)
 
         # Sort combinations for consistent ordering
-        combinations = sorted(list(solar_inverter_combinations))
+        combinations = sorted(solar_inverter_combinations)
         n_combinations = len(combinations)
 
         if n_combinations == 0:
             print("No solar+inverter combinations found.")
             return
-
-        # Get unique battery capacities for consistent color mapping
-        battery_capacities = sorted(list(set(r["battery_capacity_kwh"] for r in battery_results)))
-        colors = plt.cm.tab10(np.linspace(0, 1, len(battery_capacities)))
-        battery_color_map = {capacity: colors[i] for i, capacity in enumerate(battery_capacities)}
 
         # Create individual plots for each solar+inverter combination
         for solar_kw, inverter_kw in combinations:
@@ -2322,8 +2330,6 @@ class MultiScenarioAnalyzer:
 
             # Plot each battery capacity as a separate line
             for scenario in combination_scenarios:
-                battery_capacity = scenario["battery_capacity_kwh"]
-
                 # Find the matching result with battery log
                 matching_result = None
                 for result in self.results:
@@ -2340,10 +2346,6 @@ class MultiScenarioAnalyzer:
 
                     # Add month column to battery log
                     battery_log["month"] = battery_log["datetime"].dt.month
-
-                    # Create label for this battery capacity
-                    battery_label = f"{battery_capacity:.0f} kWh"
-                    color = battery_color_map[battery_capacity]
 
                     # Plot each month as a separate line
                     month_names = [
@@ -2598,7 +2600,12 @@ class MultiScenarioAnalyzer:
                     max_power_block1=float(power_block_1),
                     max_power_block2=float(power_block_2),
                     min_soc_reserve=float(min_soc_reserve),
-                    heating_config_tuple=tuple(self.heating_config.get(k) for k in ["heating_kwh", "start_hour", "end_hour"]) if self.heating_config else None,
+                    heating_config_tuple=tuple(
+                        self.heating_config.get(k)
+                        for k in ["heating_kwh", "start_hour", "end_hour"]
+                    )
+                    if self.heating_config
+                    else None,
                 )
 
                 if result["simulation_failed"]:
@@ -2753,7 +2760,7 @@ class MultiScenarioAnalyzer:
         """Save optimization convergence and parameter evolution plots"""
         try:
             # Create comprehensive optimization visualization
-            fig = plt.figure(figsize=(15, 12))
+            plt.figure(figsize=(15, 12))
 
             # Plot 1: Parameter Evolution over Time
             plt.subplot(2, 2, 1)
@@ -2848,7 +2855,6 @@ class MultiScenarioAnalyzer:
                 # Create a 2D projection showing solar vs inverter evolution
                 solar_vals = self._evolution_history["best_solar"]
                 inverter_vals = self._evolution_history["best_inverter"]
-                battery_vals = self._evolution_history["best_battery"]
 
                 # Color points by progression (early = blue, late = red)
                 n_points = len(solar_vals)
@@ -2873,7 +2879,7 @@ class MultiScenarioAnalyzer:
                     va="center",
                     transform=plt.gca().transAxes,
                     fontsize=12,
-                    bbox=dict(boxstyle="round", facecolor="lightblue", alpha=0.5),
+                    bbox={"boxstyle": "round", "facecolor": "lightblue", "alpha": 0.5},
                 )
                 plt.title("Optimization Summary")
                 plt.axis("off")
@@ -3240,7 +3246,9 @@ def main():
         )
         print(f"Export price: €{args.export_price:.3f}/kWh")
         if args.add_heating_load:
-            print(f"Heating load: {args.heating_kwh} kWh/season, {args.heating_start_hour}:00-{'midnight' if args.heating_end_hour == 0 else f'{args.heating_end_hour}:00'}")
+            print(
+                f"Heating load: {args.heating_kwh} kWh/season, {args.heating_start_hour}:00-{'midnight' if args.heating_end_hour == 0 else f'{args.heating_end_hour}:00'}"
+            )
 
         # Parse parameter ranges
         solar_range = parse_range(args.solar_range)
@@ -3307,7 +3315,13 @@ def main():
             enable_power_smoothing=args.enable_power_smoothing,
             min_soc_reserve=args.min_soc_reserve,
             max_power_by_block=max_power_by_block if max_power_by_block else None,
-            heating_config={"heating_kwh": args.heating_kwh, "start_hour": args.heating_start_hour, "end_hour": args.heating_end_hour} if args.add_heating_load else None,
+            heating_config={
+                "heating_kwh": args.heating_kwh,
+                "start_hour": args.heating_start_hour,
+                "end_hour": args.heating_end_hour,
+            }
+            if args.add_heating_load
+            else None,
         )
 
         # Check if optimization is requested
@@ -3349,7 +3363,9 @@ def main():
             f"Solar: {args.solar_power}kW, Inverter: {args.inverter_power}kW, Battery: {args.battery_capacity}kWh"
         )
         if args.add_heating_load:
-            print(f"Heating load: {args.heating_kwh} kWh/season, {args.heating_start_hour}:00-{'midnight' if args.heating_end_hour == 0 else f'{args.heating_end_hour}:00'}")
+            print(
+                f"Heating load: {args.heating_kwh} kWh/season, {args.heating_start_hour}:00-{'midnight' if args.heating_end_hour == 0 else f'{args.heating_end_hour}:00'}"
+            )
 
         # Create transmission costs dictionary from arguments
         transmission_costs = {
@@ -3406,7 +3422,13 @@ def main():
                 }.items()
                 if v is not None
             },
-            heating_config={"heating_kwh": args.heating_kwh, "start_hour": args.heating_start_hour, "end_hour": args.heating_end_hour} if args.add_heating_load else None,
+            heating_config={
+                "heating_kwh": args.heating_kwh,
+                "start_hour": args.heating_start_hour,
+                "end_hour": args.heating_end_hour,
+            }
+            if args.add_heating_load
+            else None,
         )
 
         # Run simulation
@@ -3415,7 +3437,7 @@ def main():
         simulator.simulate_power_flows()
 
         # Calculate costs and savings
-        cost_analysis = simulator.calculate_costs_and_savings(
+        simulator.calculate_costs_and_savings(
             peak_price=args.peak_price,
             off_peak_price=args.off_peak_price,
             export_price=args.export_price,

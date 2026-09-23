@@ -1,18 +1,17 @@
 """Tests for the NiceGUI frontend."""
 
+from pathlib import Path
+
 import numpy as np
 import pandas as pd
 import pytest
-from pathlib import Path
 
 from gui import (
     DEFAULTS,
     _find_data_file,
-    build_shared_params,
     make_monthly_power_fees,
     make_transmission_costs,
 )
-
 
 # ---------------------------------------------------------------------------
 # Unit tests — pure functions, no NiceGUI server needed
@@ -68,18 +67,28 @@ class TestFindDataFile:
 class TestDefaults:
     def test_single_scenario_keys_present(self):
         required = [
-            "solar_power", "inverter_power", "battery_capacity",
-            "battery_c_rate", "battery_efficiency",
-            "peak_price", "off_peak_price", "export_price",
+            "solar_power",
+            "inverter_power",
+            "battery_capacity",
+            "battery_c_rate",
+            "battery_efficiency",
+            "peak_price",
+            "off_peak_price",
+            "export_price",
         ]
         for key in required:
             assert key in DEFAULTS, f"Missing default: {key}"
 
     def test_batch_keys_present(self):
         required = [
-            "solar_range", "inverter_range", "battery_range",
-            "solar_cost_per_kw", "battery_cost_per_kwh",
-            "discount_rate", "loan_rate", "loan_years",
+            "solar_range",
+            "inverter_range",
+            "battery_range",
+            "solar_cost_per_kw",
+            "battery_cost_per_kwh",
+            "discount_rate",
+            "loan_rate",
+            "loan_years",
         ]
         for key in required:
             assert key in DEFAULTS, f"Missing default: {key}"
@@ -113,14 +122,17 @@ def gui_csv_files(tmp_path):
     prod_path = tmp_path / "production.csv"
     prod.to_csv(prod_path, index=False)
 
-    cons = pd.DataFrame({
-        "datetime": pd.date_range("2024-01-15 00:15:00", periods=96, freq="15min")
-        .strftime("%d. %m. %Y %H:%M:%S"),
-        "energy_kwh": [0.5] * 96,
-        "power_kw": [2.0] * 96,
-        "transmission_block": [3] * 96,
-        "extra": [""] * 96,
-    })
+    cons = pd.DataFrame(
+        {
+            "datetime": pd.date_range("2024-01-15 00:15:00", periods=96, freq="15min").strftime(
+                "%d. %m. %Y %H:%M:%S"
+            ),
+            "energy_kwh": [0.5] * 96,
+            "power_kw": [2.0] * 96,
+            "transmission_block": [3] * 96,
+            "extra": [""] * 96,
+        }
+    )
     cons_path = tmp_path / "consumption.csv"
     cons.to_csv(cons_path, index=False)
 

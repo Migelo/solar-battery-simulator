@@ -50,7 +50,7 @@ def _handle_upload(event, target_name: str, label_widget) -> None:
     label_widget.text = f"{target_name}: {event.name}"
 
 
-def _data_files_section(inputs: dict):
+def _data_files_section():
     """Create file upload section — collapsed when files are already found."""
     prod_found = _find_data_file("production.csv")
     cons_found = _find_data_file("consumption.csv")
@@ -58,9 +58,7 @@ def _data_files_section(inputs: dict):
     cons_exists = Path(cons_found).exists()
     both_found = prod_exists and cons_exists
 
-    with ui.expansion(
-        "Data Files", icon="folder_open", value=not both_found
-    ).classes("w-full"):
+    with ui.expansion("Data Files", icon="folder_open", value=not both_found).classes("w-full"):
         if both_found:
             ui.label(f"Using: {prod_found}, {cons_found}").classes("text-caption text-positive")
         else:
@@ -99,8 +97,14 @@ def make_monthly_power_fees(b1, b2, b3, b4, b5):
 
 def fig_to_png_bytes(fig) -> bytes:
     buf = io.BytesIO()
-    fig.savefig(buf, format="png", dpi=150, bbox_inches="tight",
-                facecolor=fig.get_facecolor(), edgecolor="none")
+    fig.savefig(
+        buf,
+        format="png",
+        dpi=150,
+        bbox_inches="tight",
+        facecolor=fig.get_facecolor(),
+        edgecolor="none",
+    )
     plt.close(fig)
     buf.seek(0)
     return buf.read()
@@ -174,9 +178,15 @@ async def run_single_simulation(params: dict, results_container, spinner):
 
         with plt.rc_context(_GUI_PLOT_RC):
             fig, (ax1, ax2, ax3) = plt.subplots(3, 1, figsize=(14, 9))
-            ax1.plot(idx, plot_data["solar_generation_kwh"] * 4, label="Solar", color="orange", lw=1.5)
-            ax1.plot(idx, plot_data["consumption_kwh"] * 4, label="Consumption", color="blue", lw=1.5)
-            ax1.fill_between(idx, 0, plot_data["solar_generation_kwh"] * 4, alpha=0.2, color="orange")
+            ax1.plot(
+                idx, plot_data["solar_generation_kwh"] * 4, label="Solar", color="orange", lw=1.5
+            )
+            ax1.plot(
+                idx, plot_data["consumption_kwh"] * 4, label="Consumption", color="blue", lw=1.5
+            )
+            ax1.fill_between(
+                idx, 0, plot_data["solar_generation_kwh"] * 4, alpha=0.2, color="orange"
+            )
             ax1.set_ylabel("Power (kW)")
             ax1.set_title(f"Power Flows — First {days} Days")
             ax1.legend()
@@ -205,7 +215,9 @@ async def run_single_simulation(params: dict, results_container, spinner):
         total_solar = r["solar_generation_kwh"].sum()
         total_import = r["grid_import_kwh"].sum()
         total_export = r["grid_export_kwh"].sum()
-        self_sufficiency = (1 - total_import / total_consumption) * 100 if total_consumption > 0 else 0
+        self_sufficiency = (
+            (1 - total_import / total_consumption) * 100 if total_consumption > 0 else 0
+        )
         avg_soc = r["battery_soc_percent"].mean()
         cycles = (
             (r["battery_charge_kwh"].sum() + r["battery_discharge_kwh"].sum())
@@ -266,22 +278,25 @@ async def run_single_simulation(params: dict, results_container, spinner):
             ui.label("Transmission Cost Breakdown").classes("text-h6 q-mt-lg")
             rows = []
             for block_name, data in tb.items():
-                rows.append({
-                    "Block": block_name.replace("_", " ").title(),
-                    "Intervals": data["intervals"],
-                    "% of Year": f"{data['percentage_of_year']:.1f}",
-                    "Import (kWh)": f"{data['total_import_kwh']:.1f}",
-                    "Rate (\u20ac/kWh)": f"{data['transmission_rate_eur_per_kwh']:.5f}",
-                    "Trans. Cost (\u20ac)": f"{data['transmission_cost_eur']:.2f}",
-                    "Max Power (kW)": f"{data['max_import_power_kw']:.1f}",
-                    "Annual Fee (\u20ac)": f"{data['annual_power_fee_eur']:.2f}",
-                })
+                rows.append(
+                    {
+                        "Block": block_name.replace("_", " ").title(),
+                        "Intervals": data["intervals"],
+                        "% of Year": f"{data['percentage_of_year']:.1f}",
+                        "Import (kWh)": f"{data['total_import_kwh']:.1f}",
+                        "Rate (\u20ac/kWh)": f"{data['transmission_rate_eur_per_kwh']:.5f}",
+                        "Trans. Cost (\u20ac)": f"{data['transmission_cost_eur']:.2f}",
+                        "Max Power (kW)": f"{data['max_import_power_kw']:.1f}",
+                        "Annual Fee (\u20ac)": f"{data['annual_power_fee_eur']:.2f}",
+                    }
+                )
             columns = [{"name": k, "label": k, "field": k, "sortable": True} for k in rows[0]]
             ui.table(columns=columns, rows=rows).classes("q-mt-sm")
 
 
 def _b64(data: bytes) -> str:
     import base64
+
     return base64.b64encode(data).decode()
 
 
@@ -309,9 +324,7 @@ async def run_batch_analysis(params: dict, results_container, spinner):
         current = len(analyzer.results) if analyzer and hasattr(analyzer, "results") else 0
         if total > 0:
             progress_bar.set_value(current / total)
-            progress_label.set_text(
-                f"{progress['phase']}: {current}/{total} scenarios"
-            )
+            progress_label.set_text(f"{progress['phase']}: {current}/{total} scenarios")
         else:
             progress_label.set_text(progress["phase"])
 
@@ -396,8 +409,14 @@ async def run_batch_analysis(params: dict, results_container, spinner):
                 aggfunc="max",
             )
             fig, ax = plt.subplots(figsize=(10, 6))
-            sns.heatmap(pivot, annot=True, fmt=".0f", cmap="viridis",
-                         cbar_kws={"label": "Annual Savings (\u20ac)"}, ax=ax)
+            sns.heatmap(
+                pivot,
+                annot=True,
+                fmt=".0f",
+                cmap="viridis",
+                cbar_kws={"label": "Annual Savings (\u20ac)"},
+                ax=ax,
+            )
             ax.set_title("Annual Savings: Solar vs Battery")
             ax.set_xlabel("Solar (kW)")
             ax.set_ylabel("Battery (kWh)")
@@ -413,8 +432,16 @@ async def run_batch_analysis(params: dict, results_container, spinner):
                 aggfunc="min",
             )
             fig, ax = plt.subplots(figsize=(10, 6))
-            sns.heatmap(pivot, annot=True, fmt=".1f", cmap="RdYlGn_r", vmin=0, vmax=20,
-                         cbar_kws={"label": "Payback (years)"}, ax=ax)
+            sns.heatmap(
+                pivot,
+                annot=True,
+                fmt=".1f",
+                cmap="RdYlGn_r",
+                vmin=0,
+                vmax=20,
+                cbar_kws={"label": "Payback (years)"},
+                ax=ax,
+            )
             ax.set_title("ROI Payback Period: Solar vs Battery")
             ax.set_xlabel("Solar (kW)")
             ax.set_ylabel("Battery (kWh)")
@@ -429,8 +456,14 @@ async def run_batch_analysis(params: dict, results_container, spinner):
                 aggfunc="max",
             )
             fig, ax = plt.subplots(figsize=(10, 6))
-            sns.heatmap(pivot, annot=True, fmt=".1f", cmap="YlGn",
-                         cbar_kws={"label": "Self-Sufficiency (%)"}, ax=ax)
+            sns.heatmap(
+                pivot,
+                annot=True,
+                fmt=".1f",
+                cmap="YlGn",
+                cbar_kws={"label": "Self-Sufficiency (%)"},
+                ax=ax,
+            )
             ax.set_title("Self-Sufficiency: Solar vs Battery")
             ax.set_xlabel("Solar (kW)")
             ax.set_ylabel("Battery (kWh)")
@@ -446,8 +479,14 @@ async def run_batch_analysis(params: dict, results_container, spinner):
                     aggfunc="max",
                 )
                 fig, ax = plt.subplots(figsize=(10, 6))
-                sns.heatmap(pivot, annot=True, fmt=".0f", cmap="RdYlGn",
-                             cbar_kws={"label": "NPV 20yr (\u20ac)"}, ax=ax)
+                sns.heatmap(
+                    pivot,
+                    annot=True,
+                    fmt=".0f",
+                    cmap="RdYlGn",
+                    cbar_kws={"label": "NPV 20yr (\u20ac)"},
+                    ax=ax,
+                )
                 ax.set_title("20-Year NPV: Solar vs Battery")
                 ax.set_xlabel("Solar (kW)")
                 ax.set_ylabel("Battery (kWh)")
@@ -457,16 +496,18 @@ async def run_batch_analysis(params: dict, results_container, spinner):
         # Comparison table data
         table_rows = []
         for r in sorted(analyzer.results, key=lambda x: x["savings_vs_baseline"], reverse=True):
-            table_rows.append({
-                "Solar (kW)": r["solar_panel_power_kw"],
-                "Inverter (kW)": r["inverter_power_kw"],
-                "Battery (kWh)": r["battery_capacity_kwh"],
-                "Savings (\u20ac/yr)": f"{r['savings_vs_baseline']:,.0f}",
-                "Payback (yr)": f"{r['payback_years']:.1f}",
-                "NPV 20yr (\u20ac)": f"{r.get('npv_20_years', 0):,.0f}",
-                "Self-Suff (%)": f"{r.get('self_sufficiency_percent', 0):.1f}",
-                "Investment (\u20ac)": f"{r.get('total_investment', 0):,.0f}",
-            })
+            table_rows.append(
+                {
+                    "Solar (kW)": r["solar_panel_power_kw"],
+                    "Inverter (kW)": r["inverter_power_kw"],
+                    "Battery (kWh)": r["battery_capacity_kwh"],
+                    "Savings (\u20ac/yr)": f"{r['savings_vs_baseline']:,.0f}",
+                    "Payback (yr)": f"{r['payback_years']:.1f}",
+                    "NPV 20yr (\u20ac)": f"{r.get('npv_20_years', 0):,.0f}",
+                    "Self-Suff (%)": f"{r.get('self_sufficiency_percent', 0):.1f}",
+                    "Investment (\u20ac)": f"{r.get('total_investment', 0):,.0f}",
+                }
+            )
 
         return {"plots": plots, "table_rows": table_rows, "n_scenarios": len(analyzer.results)}
 
@@ -646,14 +687,22 @@ def index():
         single_tab = ui.tab("Single Scenario")
         batch_tab = ui.tab("Batch Analysis")
 
-    with ui.tab_panels(tabs, value=single_tab).classes("w-full").style("min-height: calc(100vh - 130px)"):
+    with (
+        ui.tab_panels(tabs, value=single_tab)
+        .classes("w-full")
+        .style("min-height: calc(100vh - 130px)")
+    ):
         # ==================================================================
         # SINGLE SCENARIO TAB
         # ==================================================================
         with ui.tab_panel(single_tab):
             single_inputs = {}
 
-            with ui.splitter(value=25).classes("w-full").style("min-height: calc(100vh - 160px)") as splitter:
+            with (
+                ui.splitter(value=25)
+                .classes("w-full")
+                .style("min-height: calc(100vh - 160px)") as splitter
+            ):
                 with splitter.before:
                     with ui.scroll_area().classes("w-full").style("height: calc(100vh - 170px)"):
                         with ui.column().classes("q-gutter-xs p-2 w-full"):
@@ -669,16 +718,36 @@ def index():
                                     ),
                                 ).props("color=primary dense")
 
-                            _data_files_section(single_inputs)
+                            _data_files_section()
 
-                            with ui.expansion("System Specs", icon="solar_power", value=True).classes("w-full").props("dense"):
+                            with (
+                                ui.expansion("System Specs", icon="solar_power", value=True)
+                                .classes("w-full")
+                                .props("dense")
+                            ):
                                 with ui.grid(columns=3).classes("w-full gap-1"):
-                                    _number("Solar", "solar_power", single_inputs, step=0.5, suffix="kW")
-                                    _number("Inverter", "inverter_power", single_inputs, step=0.5, suffix="kW")
-                                    _number("Battery", "battery_capacity", single_inputs, step=1, suffix="kWh")
+                                    _number(
+                                        "Solar", "solar_power", single_inputs, step=0.5, suffix="kW"
+                                    )
+                                    _number(
+                                        "Inverter",
+                                        "inverter_power",
+                                        single_inputs,
+                                        step=0.5,
+                                        suffix="kW",
+                                    )
+                                    _number(
+                                        "Battery",
+                                        "battery_capacity",
+                                        single_inputs,
+                                        step=1,
+                                        suffix="kWh",
+                                    )
                                 with ui.grid(columns=2).classes("w-full gap-1"):
                                     _number("C-rate", "battery_c_rate", single_inputs, step=0.1)
-                                    _number("Efficiency", "battery_efficiency", single_inputs, step=0.05)
+                                    _number(
+                                        "Efficiency", "battery_efficiency", single_inputs, step=0.05
+                                    )
 
                             _pricing_section(single_inputs)
                             _transmission_section(single_inputs)
@@ -697,7 +766,11 @@ def index():
         with ui.tab_panel(batch_tab):
             batch_inputs = {}
 
-            with ui.splitter(value=25).classes("w-full").style("min-height: calc(100vh - 160px)") as splitter:
+            with (
+                ui.splitter(value=25)
+                .classes("w-full")
+                .style("min-height: calc(100vh - 160px)") as splitter
+            ):
                 with splitter.before:
                     with ui.scroll_area().classes("w-full").style("height: calc(100vh - 170px)"):
                         with ui.column().classes("q-gutter-xs p-2 w-full"):
@@ -713,9 +786,13 @@ def index():
                                     ),
                                 ).props("color=primary dense no-wrap")
 
-                            _data_files_section(batch_inputs)
+                            _data_files_section()
 
-                            with ui.expansion("Parameter Ranges", icon="grid_view", value=True).classes("w-full").props("dense"):
+                            with (
+                                ui.expansion("Parameter Ranges", icon="grid_view", value=True)
+                                .classes("w-full")
+                                .props("dense")
+                            ):
                                 batch_inputs["solar_range"] = ui.input(
                                     label="Solar range (kW)", value=DEFAULTS["solar_range"]
                                 ).classes("w-full")
@@ -726,20 +803,64 @@ def index():
                                     label="Battery range (kWh)", value=DEFAULTS["battery_range"]
                                 ).classes("w-full")
 
-                            with ui.expansion("Battery", icon="battery_charging_full").classes("w-full").props("dense"):
+                            with (
+                                ui.expansion("Battery", icon="battery_charging_full")
+                                .classes("w-full")
+                                .props("dense")
+                            ):
                                 with ui.grid(columns=2).classes("w-full gap-1"):
                                     _number("C-rate", "battery_c_rate", batch_inputs, step=0.1)
-                                    _number("Efficiency", "battery_efficiency", batch_inputs, step=0.05)
+                                    _number(
+                                        "Efficiency", "battery_efficiency", batch_inputs, step=0.05
+                                    )
 
-                            with ui.expansion("Equipment Costs", icon="euro", value=True).classes("w-full").props("dense"):
+                            with (
+                                ui.expansion("Equipment Costs", icon="euro", value=True)
+                                .classes("w-full")
+                                .props("dense")
+                            ):
                                 with ui.grid(columns=2).classes("w-full gap-1"):
-                                    _number("Solar", "solar_cost_per_kw", batch_inputs, step=10, suffix="\u20ac/kW")
-                                    _number("Inverter", "inverter_cost_per_kw", batch_inputs, step=10, suffix="\u20ac/kW")
-                                    _number("Battery", "battery_cost_per_kwh", batch_inputs, step=10, suffix="\u20ac/kWh")
-                                    _number("Solar maint.", "maintenance_fee_per_kw", batch_inputs, step=1, suffix="\u20ac/kW/yr")
-                                    _number("Batt. maint.", "battery_maintenance_fee_per_kwh", batch_inputs, step=1, suffix="\u20ac/kWh/yr")
+                                    _number(
+                                        "Solar",
+                                        "solar_cost_per_kw",
+                                        batch_inputs,
+                                        step=10,
+                                        suffix="\u20ac/kW",
+                                    )
+                                    _number(
+                                        "Inverter",
+                                        "inverter_cost_per_kw",
+                                        batch_inputs,
+                                        step=10,
+                                        suffix="\u20ac/kW",
+                                    )
+                                    _number(
+                                        "Battery",
+                                        "battery_cost_per_kwh",
+                                        batch_inputs,
+                                        step=10,
+                                        suffix="\u20ac/kWh",
+                                    )
+                                    _number(
+                                        "Solar maint.",
+                                        "maintenance_fee_per_kw",
+                                        batch_inputs,
+                                        step=1,
+                                        suffix="\u20ac/kW/yr",
+                                    )
+                                    _number(
+                                        "Batt. maint.",
+                                        "battery_maintenance_fee_per_kwh",
+                                        batch_inputs,
+                                        step=1,
+                                        suffix="\u20ac/kWh/yr",
+                                    )
 
-                            with ui.expansion("Financial", icon="account_balance").classes("w-full").props("dense"):
+                            with (
+                                ui.expansion("Financial", icon="account_balance")
+                                .classes("w-full")
+                                .props("dense")
+                            ):
                                 with ui.grid(columns=3).classes("w-full gap-1"):
                                     _number("Discount", "discount_rate", batch_inputs, step=0.01)
                                     _number("Loan rate", "loan_rate", batch_inputs, step=0.01)

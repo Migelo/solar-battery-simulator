@@ -6,7 +6,23 @@ on:
   pull_request:
     branches: [main]
 
-jobs:
+  lint:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+        with:
+          version: "latest"
+
+      - name: Run Ruff lint
+        run: uvx ruff@0.13.3 check .
+
+      - name: Check Ruff formatting
+        run: uvx ruff@0.13.3 format --check .
+
   test:
     runs-on: ubuntu-latest
     
