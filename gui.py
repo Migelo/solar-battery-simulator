@@ -3,6 +3,7 @@
 
 import asyncio
 import io
+import os
 import tempfile
 from pathlib import Path
 
@@ -372,6 +373,9 @@ async def run_batch_analysis(params: dict, results_container, spinner):
             transmission_costs=make_transmission_costs(
                 params["tb1"], params["tb2"], params["tb3"], params["tb4"], params["tb5"]
             ),
+            monthly_power_fees=make_monthly_power_fees(
+                params["pf1"], params["pf2"], params["pf3"], params["pf4"], params["pf5"]
+            ),
             ove_spte_fee=params["ove_spte_fee"],
             enable_power_smoothing=params["enable_power_smoothing"],
             min_soc_reserve=params["min_soc_reserve"],
@@ -392,7 +396,7 @@ async def run_batch_analysis(params: dict, results_container, spinner):
 
         progress["current"] = progress["total"]
         progress["phase"] = "Generating plots"
-        analyzer.create_comparison_summary()
+        analyzer.create_comparison_summary(output_path=None)
 
         # Build heatmap figures in memory instead of saving to files
         plots = {}
@@ -879,4 +883,9 @@ def index():
 
 
 if __name__ in {"__main__", "__mp_main__"}:
-    ui.run(title="Solar Battery Simulator", port=8080, reload=False, storage_secret="solar-sim")
+    ui.run(
+        title="Solar Battery Simulator",
+        port=8080,
+        reload=False,
+        storage_secret=os.environ.get("NICEGUI_STORAGE_SECRET", "solar-sim-dev-only"),
+    )

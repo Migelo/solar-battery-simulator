@@ -344,7 +344,15 @@ class PowerFlowSimulator:
         consumption_df["consumption_kwh"] = consumption_df["energy_wh"]
         consumption_df["consumption_kw"] = consumption_df["power_w"]
 
-        # Ensure we have the same number of records (take minimum)
+        # Files ship with different lengths (leap-year consumption vs non-leap
+        # production). Align positionally on the head; warn so the dropped tail
+        # day is visible instead of silent.
+        if len(production_df) != len(consumption_df):
+            print(
+                f"Warning: production has {len(production_df)} intervals, "
+                f"consumption has {len(consumption_df)} — truncating to "
+                f"{min(len(production_df), len(consumption_df))}."
+            )
         min_records = min(len(production_df), len(consumption_df))
         production_df = production_df.iloc[:min_records].copy()
         consumption_df = consumption_df.iloc[:min_records].copy()
@@ -483,11 +491,12 @@ class PowerFlowSimulator:
         interval_hours = 0.25  # 15 minutes = 0.25 hours
         max_inverter_output_per_interval = self.inverter_power_kw
 
-        # Clip positive generation, keep negative values (nighttime) as-is
-        self.df["solar_output_kw"] = np.where(
-            self.df["scaled_solar_kw"] > 0,
+        # Clip at zero: baseline shows small negative standby draw at night
+        # (-0.08 kW inverter self-consumption), not negative generation
+        self.df["solar_output_kw"] = np.clip(
             np.minimum(self.df["scaled_solar_kw"], max_inverter_output_per_interval),
-            self.df["scaled_solar_kw"],  # Keep negative values unchanged
+            0.0,
+            None,
         )
 
         # Convert to energy for 15-minute intervals
@@ -682,8 +691,13 @@ class PowerFlowSimulator:
                     # Power smoothing can discharge below the reserve (down to 0 SOC if needed)
                     # Available capacity = all current SOC for power smoothing
                     available_for_smoothing = soc_kwh
+                    # Normal discharge above already spent part of this interval's
+                    # C-rate budget; smoothing gets only the remainder
+                    remaining_discharge_budget = max(
+                        0.0, max_discharge_kwh_per_interval - battery_discharge
+                    )
                     max_discharge_from_reserve = min(
-                        available_for_smoothing, max_discharge_kwh_per_interval
+                        available_for_smoothing, remaining_discharge_budget
                     )
 
                     # Use reserve to reduce grid power if beneficial
@@ -1058,14 +1072,15 @@ class PowerFlowSimulator:
                 else 0
             )
 
-            # Monthly power fee calculation (EUR/month) = max_power_kW * rate_EUR_per_kW_per_month
+            # Monthly power fee (EUR/month); annual uses shared MONTHS_BLOCK_ACTIVE
+            # so the displayed table matches the billed costs
             power_fee_rate = self.monthly_power_fees[f"block{block}"]
             monthly_power_fee_eur = max_import_power_kw * power_fee_rate
-            annual_power_fee_eur = monthly_power_fee_eur * 12
+            annual_power_fee_eur = monthly_power_fee_eur * self.MONTHS_BLOCK_ACTIVE[block]
 
             block_analysis[f"block_{block}"] = {
                 "intervals": intervals,
-                "percentage_of_year": (intervals / 35040) * 100,  # 35040 = 365 * 24 * 4 intervals
+                "percentage_of_year": (intervals / len(self.simulation_results)) * 100,
                 "total_import_kwh": total_import_kwh,
                 "total_export_kwh": total_export_kwh,
                 "transmission_rate_eur_per_kwh": transmission_rate,
@@ -1098,7 +1113,7 @@ class PowerFlowSimulator:
                 # Recalculate power fees with adjusted max power
                 power_fee_rate = self.monthly_power_fees[f"block{block_num}"]
                 monthly_power_fee_eur = max_powers[i] * power_fee_rate
-                annual_power_fee_eur = monthly_power_fee_eur * 12
+                annual_power_fee_eur = monthly_power_fee_eur * self.MONTHS_BLOCK_ACTIVE[block_num]
                 block_analysis[f"block_{block_num}"]["monthly_power_fee_eur"] = (
                     monthly_power_fee_eur
                 )
@@ -1119,7 +1134,7 @@ class PowerFlowSimulator:
             block_data = self.simulation_results[
                 self.simulation_results["transmission_block"] == block
             ]
-            max_power_kw = block_data[column].max() * 4 if len(block_data) > 0 else 99999999
+            max_power_kw = block_data[column].max() * 4 if len(block_data) > 0 else 0.0
             block_power[f"block_{block}"] = max_power_kw
             if block > 1:
                 # Ensure max power ordering: Block 1 <= Block 2 <= Block 3 <= Block 4 <= Block 5
@@ -1146,14 +1161,21 @@ class PowerFlowSimulator:
         # Calculate weighted power: 4 × Block1 + 8 × Block2
         weighted_power_kw = 4 * max_power_by_block["block_1"] + 8 * max_power_by_block["block_2"]
 
-        # Calculate monthly and annual costs
-        annual_ove_spte_cost = weighted_power_kw * self.ove_spte_fee
+        # ove_spte_fee is billed per kW per month -> annualize x12
+        monthly_ove_spte_cost = weighted_power_kw * self.ove_spte_fee
+        annual_ove_spte_cost = monthly_ove_spte_cost * 12
 
         return {
             "weighted_power_kw": weighted_power_kw,
             "ove_spte_rate_eur_per_kw_per_month": self.ove_spte_fee,
+            "monthly_ove_spte_cost_eur": monthly_ove_spte_cost,
             "annual_ove_spte_cost_eur": annual_ove_spte_cost,
         }
+
+    # Months each transmission block is billed per year (Slovenian seasonal tariff:
+    # block 1 high season Nov-Mar ~4 months, block 5 low season ~8 months).
+    # Single source of truth for charged costs AND displayed breakdown.
+    MONTHS_BLOCK_ACTIVE = {1: 4, 2: 12, 3: 12, 4: 12, 5: 8}
 
     def _calculate_monthly_power_fees(self, max_power_by_block: dict[str, float]) -> float:
         """Calculate monthly power fees for solar+battery scenario"""
@@ -1167,11 +1189,7 @@ class PowerFlowSimulator:
             max_power_kw = max_power_by_block[f"block_{block}"]
             power_fee_rate = self.monthly_power_fees[f"block{block}"]
             monthly_power_fee = max_power_kw * power_fee_rate
-            months_block_is_active = 12
-            if block == 1:
-                months_block_is_active = 4
-            elif block == 5:
-                months_block_is_active = 8
+            months_block_is_active = self.MONTHS_BLOCK_ACTIVE[block]
             annual_power_fee = monthly_power_fee * months_block_is_active
             total_annual_power_fees += annual_power_fee
 
@@ -1334,10 +1352,14 @@ def _cached_batch_simulation_func(
     production_file: str,
     consumption_file: str,
     transmission_costs: dict[str, float],
+    monthly_power_fees: dict[str, float],
     ove_spte_fee: float,
     enable_power_smoothing: bool = True,
     max_power_block1: float = 300.0,
     max_power_block2: float = 320.0,
+    max_power_block3: float = 340.0,
+    max_power_block4: float = 2000.0,
+    max_power_block5: float = 2000.0,
     min_soc_reserve: float = 0.5,
     heating_config_tuple: tuple = None,
 ) -> dict[str, Any]:
@@ -1368,6 +1390,7 @@ def _cached_batch_simulation_func(
                 production_file=production_file,
                 consumption_file=consumption_file,
                 transmission_costs=transmission_costs,
+                monthly_power_fees=monthly_power_fees,
                 ove_spte_fee=ove_spte_fee,
                 peak_price=peak_price,
                 off_peak_price=off_peak_price,
@@ -1376,9 +1399,9 @@ def _cached_batch_simulation_func(
                 max_power_by_block={
                     1: max_power_block1,
                     2: max_power_block2,
-                    3: 340.0,  # Use default
-                    4: 2000.0,  # Use default
-                    5: 2000.0,  # Use default
+                    3: max_power_block3,
+                    4: max_power_block4,
+                    5: max_power_block5,
                 },
                 heating_config=dict(
                     zip(
@@ -1516,6 +1539,7 @@ class MultiScenarioAnalyzer:
         production_file: str = "production.csv",
         consumption_file: str = "consumption.csv",
         transmission_costs: dict[str, float] = None,
+        monthly_power_fees: dict[str, float] = None,
         ove_spte_fee: float = 3.44078,
         enable_power_smoothing: bool = False,
         min_soc_reserve: float = 0.2,
@@ -1577,6 +1601,15 @@ class MultiScenarioAnalyzer:
                 "block5": 0.01175,
             }
         self.transmission_costs = transmission_costs
+        if monthly_power_fees is None:
+            monthly_power_fees = {
+                "block1": 3.75969,
+                "block2": 1.05262,
+                "block3": 0.12837,
+                "block4": 0.0,
+                "block5": 0.0,
+            }
+        self.monthly_power_fees = monthly_power_fees
         self.ove_spte_fee = ove_spte_fee
 
         # Power smoothing parameters
@@ -1673,10 +1706,14 @@ class MultiScenarioAnalyzer:
             self.production_file,
             self.consumption_file,
             self.transmission_costs,
+            self.monthly_power_fees,
             self.ove_spte_fee,
             enable_power_smoothing=self.enable_power_smoothing,
             max_power_block1=self.max_power_by_block.get(1, 300.0),
             max_power_block2=self.max_power_by_block.get(2, 320.0),
+            max_power_block3=self.max_power_by_block.get(3, 340.0),
+            max_power_block4=self.max_power_by_block.get(4, 2000.0),
+            max_power_block5=self.max_power_by_block.get(5, 2000.0),
             min_soc_reserve=self.min_soc_reserve,
             heating_config_tuple=tuple(
                 self.heating_config.get(k) for k in ["heating_kwh", "start_hour", "end_hour"]
@@ -1803,8 +1840,12 @@ class MultiScenarioAnalyzer:
         print(f"\nCompleted all {len(self.scenarios)} simulations!")
         return self.results
 
-    def create_comparison_summary(self):
-        """Create summary table comparing all scenarios"""
+    def create_comparison_summary(self, output_path: str | None = "multi_scenario_comparison.csv"):
+        """Create summary table comparing all scenarios.
+
+        Args:
+            output_path: CSV path to write, or None to skip file write (GUI/server use).
+        """
         if not self.results:
             print("No results available. Run simulations first.")
             return None
@@ -1834,9 +1875,10 @@ class MultiScenarioAnalyzer:
             }
         )
 
-        # Export to CSV
-        summary_df.to_csv("multi_scenario_comparison.csv", index=False)
-        print("Comparison summary exported to 'multi_scenario_comparison.csv'")
+        # Export to CSV (skipped when output_path is None, e.g. GUI server runs)
+        if output_path is not None:
+            summary_df.to_csv(output_path, index=False)
+            print(f"Comparison summary exported to '{output_path}'")
 
         # Print top 10 scenarios
         print("\nTop 10 Scenarios by Annual Savings:")
@@ -2581,24 +2623,28 @@ class MultiScenarioAnalyzer:
                 return 1e6  # Large penalty for constraint violation
 
             try:
-                # Run simulation using cached function
+                # Run simulation using cached function (same inputs batch mode uses)
                 result = _cached_batch_simulation_func(
                     solar_kw=float(solar_kw),
                     inverter_kw=float(inverter_kw),
                     battery_kwh=float(battery_kwh),
-                    battery_charge_power_kw=float(battery_kwh * 0.5),  # 0.5C rate
-                    battery_discharge_power_kw=float(battery_kwh * 0.5),  # 0.5C rate
-                    battery_efficiency=0.9,
+                    battery_charge_power_kw=float(battery_kwh * self.battery_c_rate),
+                    battery_discharge_power_kw=float(battery_kwh * self.battery_c_rate),
+                    battery_efficiency=self.battery_efficiency,
                     peak_price=self.peak_price,
                     off_peak_price=self.off_peak_price,
                     export_price=self.export_price,
-                    production_file="production.csv",
-                    consumption_file="consumption.csv",
+                    production_file=self.production_file,
+                    consumption_file=self.consumption_file,
                     transmission_costs=self.transmission_costs,
+                    monthly_power_fees=self.monthly_power_fees,
                     ove_spte_fee=self.ove_spte_fee,
                     enable_power_smoothing=True,
                     max_power_block1=float(power_block_1),
                     max_power_block2=float(power_block_2),
+                    max_power_block3=self.max_power_by_block.get(3, 340.0),
+                    max_power_block4=self.max_power_by_block.get(4, 2000.0),
+                    max_power_block5=self.max_power_by_block.get(5, 2000.0),
                     min_soc_reserve=float(min_soc_reserve),
                     heating_config_tuple=tuple(
                         self.heating_config.get(k)
@@ -2621,10 +2667,16 @@ class MultiScenarioAnalyzer:
                 battery_investment = battery_kwh * self.battery_cost_per_kwh
                 total_investment = solar_investment + inverter_investment + battery_investment
 
-                # Calculate maintenance costs
+                # Calculate maintenance costs (same as run_all_scenarios,
+                # including 1% of investment general maintenance)
                 annual_solar_maintenance = solar_kw * self.maintenance_fee_per_kw
                 annual_battery_maintenance = battery_kwh * self.battery_maintenance_fee_per_kwh
-                annual_maintenance_cost = annual_solar_maintenance + annual_battery_maintenance
+                annual_general_one_percent_maintenance = total_investment * 0.01
+                annual_maintenance_cost = (
+                    annual_solar_maintenance
+                    + annual_battery_maintenance
+                    + annual_general_one_percent_maintenance
+                )
                 annual_loan_payment = self.calculate_loan_payment(total_investment)
 
                 # Calculate 20-year NPV
@@ -3306,6 +3358,7 @@ def main():
             inverter_cost_per_kw=args.inverter_cost_per_kw,
             battery_cost_per_kwh=args.battery_cost_per_kwh,
             transmission_costs=transmission_costs,
+            monthly_power_fees=monthly_power_fees,
             ove_spte_fee=args.ove_spte_fee,
             maintenance_fee_per_kw=args.maintenance_fee_per_kw,
             battery_maintenance_fee_per_kwh=args.battery_maintenance_fee_per_kwh,
