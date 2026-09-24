@@ -1,6 +1,7 @@
+---
 name: Tests
 
-on:
+on:  # yamllint disable-line rule:truthy
   push:
     branches: [main]
   pull_request:
@@ -59,10 +60,11 @@ jobs:
           UV_PYTHON: ${{ matrix.python-version }}
 
       - name: Run tests with coverage
-        run: uv run --frozen pytest --tb=short -q --cov=. --cov-report=xml:coverage.xml
+        run: >
+          uv run --frozen pytest --tb=short -q --cov=.
+          --cov-report=xml:coverage.xml
         env:
           UV_PYTHON: ${{ matrix.python-version }}
-        run: uv run --frozen pytest --tb=short --cov=. --cov-report=xml:coverage.xml
       - name: Upload coverage to Codecov
         uses: codecov/codecov-action@v5
         with:
