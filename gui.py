@@ -154,6 +154,7 @@ async def run_single_simulation(params: dict, results_container, spinner):
             min_soc_reserve=params["min_soc_reserve"],
             max_power_by_block=max_power_by_block,
             heating_config=heating_config,
+            time_resolution=params.get("time_resolution", "15min"),
             production_file=params.get("production_file", _find_data_file("production.csv")),
             consumption_file=params.get("consumption_file", _find_data_file("consumption.csv")),
         )
@@ -174,19 +175,30 @@ async def run_single_simulation(params: dict, results_container, spinner):
         # Build power flow figure
         r = sim.simulation_results
         days = 7
-        plot_data = r.head(days * 24 * 4).copy()
+        kw_factor = sim.kw_factor
+        intervals_per_hour = int(1 / sim.interval_hours)
+        bin_label = "Hourly bins" if sim.time_resolution == "1h" else "15-min intervals"
+        plot_data = r.head(days * 24 * intervals_per_hour).copy()
         idx = range(len(plot_data))
 
         with plt.rc_context(_GUI_PLOT_RC):
             fig, (ax1, ax2, ax3) = plt.subplots(3, 1, figsize=(14, 9))
             ax1.plot(
-                idx, plot_data["solar_generation_kwh"] * 4, label="Solar", color="orange", lw=1.5
+                idx,
+                plot_data["solar_generation_kwh"] * kw_factor,
+                label="Solar",
+                color="orange",
+                lw=1.5,
             )
             ax1.plot(
-                idx, plot_data["consumption_kwh"] * 4, label="Consumption", color="blue", lw=1.5
+                idx,
+                plot_data["consumption_kwh"] * kw_factor,
+                label="Consumption",
+                color="blue",
+                lw=1.5,
             )
             ax1.fill_between(
-                idx, 0, plot_data["solar_generation_kwh"] * 4, alpha=0.2, color="orange"
+                idx, 0, plot_data["solar_generation_kwh"] * kw_factor, alpha=0.2, color="orange"
             )
             ax1.set_ylabel("Power (kW)")
             ax1.set_title(f"Power Flows — First {days} Days")
@@ -199,18 +211,29 @@ async def run_single_simulation(params: dict, results_container, spinner):
             ax2.set_ylim(0, 100)
             ax2.grid(True, alpha=0.3)
 
-            ax3.plot(idx, plot_data["grid_import_kwh"] * 4, label="Import", color="red", lw=1.5)
-            ax3.plot(idx, -plot_data["grid_export_kwh"] * 4, label="Export", color="purple", lw=1.5)
-            ax3.fill_between(idx, 0, plot_data["grid_import_kwh"] * 4, alpha=0.2, color="red")
-            ax3.fill_between(idx, 0, -plot_data["grid_export_kwh"] * 4, alpha=0.2, color="purple")
+            ax3.plot(
+                idx, plot_data["grid_import_kwh"] * kw_factor, label="Import", color="red", lw=1.5
+            )
+            ax3.plot(
+                idx,
+                -plot_data["grid_export_kwh"] * kw_factor,
+                label="Export",
+                color="purple",
+                lw=1.5,
+            )
+            ax3.fill_between(
+                idx, 0, plot_data["grid_import_kwh"] * kw_factor, alpha=0.2, color="red"
+            )
+            ax3.fill_between(
+                idx, 0, -plot_data["grid_export_kwh"] * kw_factor, alpha=0.2, color="purple"
+            )
             ax3.set_ylabel("Power (kW)")
-            ax3.set_xlabel("15-min intervals")
+            ax3.set_xlabel(bin_label)
             ax3.legend()
             ax3.grid(True, alpha=0.3)
 
             fig.tight_layout()
             plot_bytes = fig_to_png_bytes(fig)
-
         # Summary stats
         total_consumption = r["consumption_kwh"].sum()
         total_solar = r["solar_generation_kwh"].sum()
@@ -381,6 +404,7 @@ async def run_batch_analysis(params: dict, results_container, spinner):
             min_soc_reserve=params["min_soc_reserve"],
             max_power_by_block=max_power_by_block,
             heating_config=heating_config,
+            time_resolution=params.get("time_resolution", "15min"),
             production_file=params.get("production_file", _find_data_file("production.csv")),
             consumption_file=params.get("consumption_file", _find_data_file("consumption.csv")),
         )
@@ -589,6 +613,7 @@ DEFAULTS = {
     "pf5": 0.0,
     "ove_spte_fee": 3.44078,
     "enable_power_smoothing": False,
+    "time_resolution": "15min",
     "min_soc_reserve": 0.2,
     "max_power_block1": 250.0,
     "max_power_block2": 250.0,
@@ -627,6 +652,17 @@ def _number(label, key, inputs, *, step=None, suffix="", **kwargs):
     n = ui.number(label=label, value=DEFAULTS[key], step=step, suffix=suffix, **kwargs)
     inputs[key] = n
     return n
+
+
+def _resolution_section(inputs):
+    with ui.expansion("Time Resolution", icon="schedule").classes("w-full"):
+        sel = ui.select(
+            options=["15min", "1h"],
+            label="Simulation bin width",
+            value=DEFAULTS["time_resolution"],
+        ).classes("w-full")
+        sel.tooltip("1h aggregates the 15-min input data into hourly bins")
+        inputs["time_resolution"] = sel
 
 
 def _pricing_section(inputs):
@@ -753,6 +789,7 @@ def index():
                                         "Efficiency", "battery_efficiency", single_inputs, step=0.05
                                     )
 
+                            _resolution_section(single_inputs)
                             _pricing_section(single_inputs)
                             _transmission_section(single_inputs)
                             _smoothing_section(single_inputs)
@@ -870,6 +907,7 @@ def index():
                                     _number("Loan rate", "loan_rate", batch_inputs, step=0.01)
                                     _number("Loan yrs", "loan_years", batch_inputs, step=1)
 
+                            _resolution_section(batch_inputs)
                             _pricing_section(batch_inputs)
                             _transmission_section(batch_inputs)
                             _smoothing_section(batch_inputs)
@@ -885,6 +923,7 @@ def index():
 if __name__ in {"__main__", "__mp_main__"}:
     ui.run(
         title="Solar Battery Simulator",
+        host="0.0.0.0",
         port=8080,
         reload=False,
         storage_secret=os.environ.get("NICEGUI_STORAGE_SECRET", "solar-sim-dev-only"),

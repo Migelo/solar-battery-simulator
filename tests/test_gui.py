@@ -75,6 +75,7 @@ class TestDefaults:
             "peak_price",
             "off_peak_price",
             "export_price",
+            "time_resolution",
         ]
         for key in required:
             assert key in DEFAULTS, f"Missing default: {key}"
@@ -165,3 +166,4 @@ class TestPageStructure:
         await user.should_see("Transmission Costs")
         await user.should_see("Power Smoothing")
         await user.should_see("Heating Load")
+        await user.should_see("Time Resolution")

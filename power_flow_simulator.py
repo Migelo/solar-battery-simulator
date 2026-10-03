@@ -167,6 +167,7 @@ class PowerFlowSimulator:
         max_power_threshold: float = None,
         max_power_by_block: dict[int, float] = None,
         heating_config: dict = None,
+        time_resolution: str = "15min",
     ):
         """
         Initialize the power flow simulator
@@ -189,6 +190,8 @@ class PowerFlowSimulator:
                 - heating_kwh (float): Total heating energy for season in kWh
                 - start_hour (int): Daily start hour (default: 7)
                 - end_hour (int): Daily end hour (0 = midnight, default: 0)
+            time_resolution (str): Simulation bin width: "15min" or "1h".
+                "1h" aggregates the 15-min input data into hourly bins after loading.
         """
         # System specifications
         self.solar_panel_power_kw = solar_panel_power_kw
@@ -261,6 +264,15 @@ class PowerFlowSimulator:
 
         # Heating load configuration
         self.heating_config = heating_config
+
+        # Time resolution: interval duration in hours + kWh→kW factor
+        if time_resolution not in ("15min", "1h"):
+            raise ValueError(
+                f"Unsupported time_resolution: {time_resolution!r} (use '15min' or '1h')"
+            )
+        self.time_resolution = time_resolution
+        self.interval_hours = 1.0 if time_resolution == "1h" else 0.25
+        self.kw_factor = 1.0 if time_resolution == "1h" else 4.0
 
         # Baseline system (from the data files)
         self.baseline_solar_kw = 640.6  # 640.6kW solar installation
@@ -368,7 +380,9 @@ class PowerFlowSimulator:
             }
         )
 
-        # Add time-based features
+        if self.time_resolution == "1h":
+            self.df = self._resample_to_hourly(self.df)
+
         self.df["hour"] = self.df["datetime"].dt.hour
         self.df["weekday"] = self.df["datetime"].dt.weekday  # 0=Monday, 6=Sunday
         self.df["month"] = self.df["datetime"].dt.month
@@ -410,6 +424,29 @@ class PowerFlowSimulator:
 
         # Apply heating load if configured
         self.apply_heating_load()
+
+    def _resample_to_hourly(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Aggregate 15-min input data into 1-hour bins.
+
+        Energy-like columns are summed; average-kW columns are averaged;
+        transmission_block takes the modal (most common) block of the hour.
+        Row count must be a multiple of 4 (inputs are 15-min sampled).
+        """
+        if len(df) % 4 != 0:
+            raise ValueError(f"Cannot resample {len(df)} rows to hourly bins: not a multiple of 4")
+        hourly_index = np.arange(len(df)) // 4
+        grouped = df.groupby(hourly_index)
+        hourly = pd.DataFrame(
+            {
+                "datetime": grouped["datetime"].first(),
+                "baseline_solar_kw": grouped["baseline_solar_kw"].mean(),
+                "consumption_kwh": grouped["consumption_kwh"].sum(),
+                "consumption_kw": grouped["consumption_kw"].mean(),
+                "transmission_block": grouped["transmission_block"].agg(lambda s: s.mode().iloc[0]),
+            }
+        ).reset_index(drop=True)
+        print(f"Resampled {len(df)} 15-min intervals into {len(hourly)} hourly bins")
+        return hourly
 
     def apply_heating_load(self) -> None:
         """
@@ -468,7 +505,7 @@ class PowerFlowSimulator:
             intervals = mask.sum()
             if intervals > 0:
                 kwh_per_interval = month_kwh / intervals
-                kw_per_interval = kwh_per_interval * 4  # 15-min intervals → kW
+                kw_per_interval = kwh_per_interval / self.interval_hours
 
                 self.df.loc[mask, "consumption_kwh"] += kwh_per_interval
                 self.df.loc[mask, "consumption_kw"] += kw_per_interval
@@ -488,7 +525,7 @@ class PowerFlowSimulator:
         self.df["scaled_solar_kw"] = self.df["baseline_solar_kw"] * scaling_factor
 
         # Apply inverter limits
-        interval_hours = 0.25  # 15 minutes = 0.25 hours
+        interval_hours = self.interval_hours
         max_inverter_output_per_interval = self.inverter_power_kw
 
         # Clip at zero: baseline shows small negative standby draw at night
@@ -499,7 +536,7 @@ class PowerFlowSimulator:
             None,
         )
 
-        # Convert to energy for 15-minute intervals
+        # Convert average power to energy for this resolution
         self.df["solar_generation_kwh"] = self.df["solar_output_kw"] * interval_hours
 
         # Calculate clipping losses
@@ -577,7 +614,7 @@ class PowerFlowSimulator:
             (soc_kwh / self.battery_capacity_kwh * 100) if self.battery_capacity_kwh > 0 else 0
         )
         print(f"Initial battery SOC: {soc_kwh:.1f} kWh ({initial_soc_percent:.0f}%)")
-        interval_hours = 0.25  # 15 minutes
+        interval_hours = self.interval_hours
 
         # Calculate max charge/discharge energy per interval
         max_charge_kwh_per_interval = self.battery_charge_power_kw * interval_hours
@@ -1054,20 +1091,24 @@ class PowerFlowSimulator:
             transmission_rate = self.transmission_costs[f"block{block}"]
             transmission_cost = total_import_kwh * transmission_rate
 
-            # Power analysis (convert kWh per 15-min interval to kW)
-            max_import_power_kw = block_data["grid_import_kwh"].max() * 4  # Convert to power
-            avg_import_power_kw = block_data["grid_import_kwh"].mean() * 4 if intervals > 0 else 0
-            max_export_power_kw = block_data["grid_export_kwh"].max() * 4
-            avg_export_power_kw = block_data["grid_export_kwh"].mean() * 4 if intervals > 0 else 0
+            # Power analysis (convert interval energy to average power)
+            max_import_power_kw = block_data["grid_import_kwh"].max() * self.kw_factor
+            avg_import_power_kw = (
+                block_data["grid_import_kwh"].mean() * self.kw_factor if intervals > 0 else 0
+            )
+            max_export_power_kw = block_data["grid_export_kwh"].max() * self.kw_factor
+            avg_export_power_kw = (
+                block_data["grid_export_kwh"].mean() * self.kw_factor if intervals > 0 else 0
+            )
 
             # Consumption power analysis
             max_consumption_power_kw = (
-                block_data["consumption_kwh"].max() * 4
+                block_data["consumption_kwh"].max() * self.kw_factor
                 if "consumption_kwh" in block_data.columns
                 else 0
             )
             avg_consumption_power_kw = (
-                block_data["consumption_kwh"].mean() * 4
+                block_data["consumption_kwh"].mean() * self.kw_factor
                 if intervals > 0 and "consumption_kwh" in block_data.columns
                 else 0
             )
@@ -1134,7 +1175,7 @@ class PowerFlowSimulator:
             block_data = self.simulation_results[
                 self.simulation_results["transmission_block"] == block
             ]
-            max_power_kw = block_data[column].max() * 4 if len(block_data) > 0 else 0.0
+            max_power_kw = block_data[column].max() * self.kw_factor if len(block_data) > 0 else 0.0
             block_power[f"block_{block}"] = max_power_kw
             if block > 1:
                 # Ensure max power ordering: Block 1 <= Block 2 <= Block 3 <= Block 4 <= Block 5
@@ -1204,9 +1245,8 @@ class PowerFlowSimulator:
         print(f"\nCreating power flow visualization for {days_to_show} days...")
 
         # Select data for visualization (first week)
-        plot_data = self.simulation_results.head(
-            days_to_show * 24 * 4
-        ).copy()  # 4 intervals per hour
+        intervals_per_hour = int(1 / self.interval_hours)
+        plot_data = self.simulation_results.head(days_to_show * 24 * intervals_per_hour).copy()
         plot_data["hour_of_day"] = (
             plot_data["datetime"].dt.hour + plot_data["datetime"].dt.minute / 60
         )
@@ -1217,14 +1257,14 @@ class PowerFlowSimulator:
         # Plot 1: Power generation and consumption
         ax1.plot(
             plot_data["hour_of_day"],
-            plot_data["solar_generation_kwh"] * 4,
+            plot_data["solar_generation_kwh"] * self.kw_factor,
             label="Solar Generation",
             color="orange",
             linewidth=2,
         )
         ax1.plot(
             plot_data["hour_of_day"],
-            plot_data["consumption_kwh"] * 4,
+            plot_data["consumption_kwh"] * self.kw_factor,
             label="Consumption",
             color="blue",
             linewidth=2,
@@ -1232,7 +1272,7 @@ class PowerFlowSimulator:
         ax1.fill_between(
             plot_data["hour_of_day"],
             0,
-            plot_data["solar_generation_kwh"] * 4,
+            plot_data["solar_generation_kwh"] * self.kw_factor,
             alpha=0.3,
             color="orange",
         )
@@ -1256,25 +1296,29 @@ class PowerFlowSimulator:
         # Plot 3: Grid import/export
         ax3.plot(
             plot_data["hour_of_day"],
-            plot_data["grid_import_kwh"] * 4,
+            plot_data["grid_import_kwh"] * self.kw_factor,
             label="Grid Import",
             color="red",
             linewidth=2,
         )
         ax3.plot(
             plot_data["hour_of_day"],
-            -plot_data["grid_export_kwh"] * 4,
+            -plot_data["grid_export_kwh"] * self.kw_factor,
             label="Grid Export",
             color="purple",
             linewidth=2,
         )
         ax3.fill_between(
-            plot_data["hour_of_day"], 0, plot_data["grid_import_kwh"] * 4, alpha=0.3, color="red"
+            plot_data["hour_of_day"],
+            0,
+            plot_data["grid_import_kwh"] * self.kw_factor,
+            alpha=0.3,
+            color="red",
         )
         ax3.fill_between(
             plot_data["hour_of_day"],
             0,
-            -plot_data["grid_export_kwh"] * 4,
+            -plot_data["grid_export_kwh"] * self.kw_factor,
             alpha=0.3,
             color="purple",
         )
@@ -1362,6 +1406,7 @@ def _cached_batch_simulation_func(
     max_power_block5: float = 2000.0,
     min_soc_reserve: float = 0.5,
     heating_config_tuple: tuple = None,
+    time_resolution: str = "15min",
 ) -> dict[str, Any]:
     """
     Standalone cached simulation function for batch mode to avoid re-running identical simulations.
@@ -1412,6 +1457,7 @@ def _cached_batch_simulation_func(
                 )
                 if heating_config_tuple
                 else None,
+                time_resolution=time_resolution,
             )
 
             # Run simulation
@@ -1545,6 +1591,7 @@ class MultiScenarioAnalyzer:
         min_soc_reserve: float = 0.2,
         max_power_by_block: dict[int, float] = None,
         heating_config: dict = None,
+        time_resolution: str = "15min",
     ):
         """
         Multi-scenario analyzer for solar + battery systems
@@ -1571,6 +1618,7 @@ class MultiScenarioAnalyzer:
                 - heating_kwh (float): Total heating energy for season in kWh
                 - start_hour (int): Daily start hour (default: 7)
                 - end_hour (int): Daily end hour (0 = midnight, default: 0)
+            time_resolution (str): Simulation bin width: "15min" or "1h"
         """
         self.solar_range = solar_range or [5, 8.5, 10, 15, 20]
         self.inverter_range = inverter_range or [5, 8, 10, 15]
@@ -1625,6 +1673,7 @@ class MultiScenarioAnalyzer:
 
         # Heating load configuration
         self.heating_config = heating_config
+        self.time_resolution = time_resolution
 
         self.scenarios = []
         self.results = []
@@ -1720,6 +1769,7 @@ class MultiScenarioAnalyzer:
             )
             if self.heating_config
             else None,
+            time_resolution=self.time_resolution,
         )
 
     def run_all_scenarios(self) -> list[dict[str, Any]]:
@@ -1806,7 +1856,7 @@ class MultiScenarioAnalyzer:
             result = {
                 **scenario,
                 **cost_analysis,
-                "solar_investment": solar_investment,
+                "time_resolution": self.time_resolution,
                 "battery_investment": battery_investment,
                 "total_investment": total_investment,
                 "payback_years": payback_years,
@@ -2247,14 +2297,14 @@ class MultiScenarioAnalyzer:
                     battery_log = matching_result["battery_log"]
 
                     # Select data for visualization (first N days)
-                    max_intervals = days_to_show * 24 * 4  # 4 intervals per hour
+                    resolution = matching_result.get("time_resolution", "15min")
+                    interval_hours = 1.0 if resolution == "1h" else 0.25
+                    max_intervals = int(days_to_show * 24 / interval_hours)
                     plot_data = battery_log.head(max_intervals).copy()
 
                     # Create time axis in hours from start
                     plot_data["hours_from_start"] = range(len(plot_data))
-                    plot_data["hours_from_start"] = (
-                        plot_data["hours_from_start"] * 0.25
-                    )  # 15-min intervals
+                    plot_data["hours_from_start"] = plot_data["hours_from_start"] * interval_hours
 
                     # Create label for this scenario
                     label = f"{scenario['solar_panel_power_kw']:.0f}kW solar + {scenario['inverter_power_kw']:.0f}kW inv"
@@ -2652,6 +2702,7 @@ class MultiScenarioAnalyzer:
                     )
                     if self.heating_config
                     else None,
+                    time_resolution=self.time_resolution,
                 )
 
                 if result["simulation_failed"]:
@@ -3036,6 +3087,13 @@ def main():
         default=0.01,
         help="Solar export price in EUR/kWh (default: 0.01)",
     )
+    parser.add_argument(
+        "--time-resolution",
+        type=str,
+        choices=["15min", "1h"],
+        default="15min",
+        help="Simulation bin width: 15-min intervals or hourly bins (default: 15min)",
+    )
 
     # Power smoothing settings
     parser.add_argument(
@@ -3375,6 +3433,7 @@ def main():
             }
             if args.add_heating_load
             else None,
+            time_resolution=args.time_resolution,
         )
 
         # Check if optimization is requested
@@ -3482,6 +3541,7 @@ def main():
             }
             if args.add_heating_load
             else None,
+            time_resolution=args.time_resolution,
         )
 
         # Run simulation
