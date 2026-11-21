@@ -26,6 +26,18 @@ uv run power_flow_simulator.py --batch-mode \
   --electricity-price 0.15 --export-price 0.0
 ```
 
+### Market Export Prices
+Pay exports the SI day-ahead price of each interval (last 365 days, cached in
+`data/price_cache/` and refreshed on each run) instead of the fixed price:
+```bash
+uv run power_flow_simulator.py --solar-power 15 --battery-capacity 20 --export-pricing market
+```
+Or use your own price file (e.g. a HUPX download):
+```bash
+uv run power_flow_simulator.py --solar-power 15 --battery-capacity 20 \
+  --export-price-file data/Labs_DAM_Aggregated_Trading_Data_15min.xlsx
+```
+
 ### With Heating Load
 Model adding a heat pump with 4000 kWh/season consumption:
 ```bash

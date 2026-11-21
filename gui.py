@@ -12,8 +12,9 @@ import matplotlib.pyplot as plt
 import pandas as pd
 from nicegui import app, ui
 
-from data_readers import SUPPORTED_EXTENSIONS
+from data_readers import ALIGN_AUTO, ALIGN_CALENDAR, SUPPORTED_EXTENSIONS
 from power_flow_simulator import MultiScenarioAnalyzer, PowerFlowSimulator
+from price_cache import DEFAULT_CACHE_DIR, cached_price_file, market_price_file, update_price_cache
 
 matplotlib.use("Agg")
 
@@ -113,6 +114,69 @@ def _data_files_section():
             ).props(f"accept={_ACCEPT} flat dense").classes("max-w-[180px]")
 
 
+EXPORT_MODE_FIXED = "Fixed price"
+EXPORT_MODE_MARKET = "Market price (SI day-ahead, last 365 days)"
+EXPORT_PRICES_NAME = "export_prices.csv"
+
+
+def _export_prices(params: dict) -> tuple[str | None, str]:
+    """(price file, alignment) for the selected export pricing mode.
+
+    Fixed price -> (None, ...). Market price -> an uploaded / data/ ``export_prices``
+    file (matched by exact time when it covers the consumption dates), otherwise the
+    rolling last-year cache, always matched by month/day/time so any consumption year
+    is compared against the latest 365 days of prices.
+    """
+    if params.get("export_price_mode", EXPORT_MODE_FIXED) != EXPORT_MODE_MARKET:
+        return None, ALIGN_AUTO
+    path = params.get("export_price_file") or _find_data_file(EXPORT_PRICES_NAME)
+    if Path(path).exists():
+        return path, ALIGN_AUTO
+    cached = cached_price_file(DEFAULT_CACHE_DIR)
+    if cached is None:  # startup refresh not finished (or offline): try once now
+        try:
+            cached = market_price_file(DEFAULT_CACHE_DIR)
+        except RuntimeError as exc:
+            raise FileNotFoundError(f"Market export pricing: {exc}") from exc
+    return cached, ALIGN_CALENDAR
+
+
+# Rolling 1-year price cache: refreshed at startup and then every few hours, so new
+# day-ahead prices (published ~13:00 for the next day) are picked up and old ones dropped.
+PRICE_CACHE_REFRESH_SECONDS = 6 * 3600
+_price_cache_status = {"text": "price cache: not updated yet"}
+
+
+def _price_cache_status_text(summary: dict) -> str:
+    if "path" not in summary:
+        return f"price cache: unavailable ({'; '.join(summary['errors'])})"
+    text = (
+        f"1-year price cache: {summary['start']} \u2192 {summary['end']} ({summary['days']} days)"
+    )
+    if summary["errors"]:
+        text += f" \u2014 {'; '.join(summary['errors'])}"
+    return text
+
+
+async def _price_cache_loop() -> None:
+    while True:
+        try:
+            summary = await asyncio.to_thread(update_price_cache, DEFAULT_CACHE_DIR)
+            _price_cache_status["text"] = _price_cache_status_text(summary)
+        except Exception as exc:  # never let the refresher take the app down
+            _price_cache_status["text"] = f"price cache: update failed ({exc})"
+        print(_price_cache_status["text"])
+        await asyncio.sleep(PRICE_CACHE_REFRESH_SECONDS)
+
+
+async def _start_price_cache() -> None:
+    if os.environ.get("PRICE_CACHE_AUTO_UPDATE", "1") != "0":
+        app.state.price_cache_task = asyncio.create_task(_price_cache_loop())
+
+
+app.on_startup(_start_price_cache)
+
+
 def make_transmission_costs(b1, b2, b3, b4, b5):
     return {"block1": b1, "block2": b2, "block3": b3, "block4": b4, "block5": b5}
 
@@ -160,6 +224,7 @@ async def run_single_simulation(params: dict, results_container, spinner):
                 5: params["max_power_block5"],
             }
 
+        export_price_file, export_price_alignment = _export_prices(params)
         sim = PowerFlowSimulator(
             solar_panel_power_kw=params["solar_power"],
             inverter_power_kw=params["inverter_power"],
@@ -182,6 +247,8 @@ async def run_single_simulation(params: dict, results_container, spinner):
             time_resolution=params.get("time_resolution", "15min"),
             production_file=params.get("production_file", _find_data_file("production.csv")),
             consumption_file=params.get("consumption_file", _find_data_file("consumption.csv")),
+            export_price_file=export_price_file,
+            export_price_alignment=export_price_alignment,
         )
 
         sim.load_and_align_data()
@@ -280,6 +347,7 @@ async def run_single_simulation(params: dict, results_container, spinner):
             "transmission_breakdown": transmission_breakdown,
             "ove_spte": ove_spte,
             "plot_bytes": plot_bytes,
+            "market_export": sim.export_price_file is not None,
             "total_consumption": total_consumption,
             "total_solar": total_solar,
             "total_import": total_import,
@@ -314,6 +382,11 @@ async def run_single_simulation(params: dict, results_container, spinner):
             _metric_card("Solar Generation", f"{result['total_solar']:,.0f} kWh/yr")
             _metric_card("Grid Import", f"{result['total_import']:,.0f} kWh/yr")
             _metric_card("Grid Export", f"{result['total_export']:,.0f} kWh/yr")
+            _metric_card("Export Revenue", f"\u20ac{ca['export_revenue']:,.0f}/yr")
+            _metric_card(
+                "Avg Export Price" + (" (market)" if result["market_export"] else ""),
+                f"\u20ac{ca['avg_export_price']:.4f}/kWh",
+            )
             _metric_card("Avg SOC", f"{result['avg_soc']:.1f}%")
             _metric_card("Battery Cycles", f"{result['cycles']:.1f}/yr")
 
@@ -401,6 +474,7 @@ async def run_batch_analysis(params: dict, results_container, spinner):
                 5: params["max_power_block5"],
             }
 
+        export_price_file, export_price_alignment = _export_prices(params)
         analyzer = MultiScenarioAnalyzer(
             solar_range=parse_range(params["solar_range"]),
             inverter_range=parse_range(params["inverter_range"]),
@@ -432,6 +506,8 @@ async def run_batch_analysis(params: dict, results_container, spinner):
             time_resolution=params.get("time_resolution", "15min"),
             production_file=params.get("production_file", _find_data_file("production.csv")),
             consumption_file=params.get("consumption_file", _find_data_file("consumption.csv")),
+            export_price_file=export_price_file,
+            export_price_alignment=export_price_alignment,
         )
 
         progress["phase"] = "Generating scenarios"
@@ -626,6 +702,7 @@ DEFAULTS = {
     "peak_price": 0.14683,
     "off_peak_price": 0.10664,
     "export_price": 0.01,
+    "export_price_mode": EXPORT_MODE_FIXED,
     "tb1": 0.01282,
     "tb2": 0.01216,
     "tb3": 0.01186,
@@ -695,7 +772,34 @@ def _pricing_section(inputs):
         with ui.row().classes("q-gutter-sm"):
             _number("Peak price", "peak_price", inputs, step=0.001, suffix="\u20ac/kWh")
             _number("Off-peak price", "off_peak_price", inputs, step=0.001, suffix="\u20ac/kWh")
-            _number("Export price", "export_price", inputs, step=0.001, suffix="\u20ac/kWh")
+        mode = ui.select(
+            options=[EXPORT_MODE_FIXED, EXPORT_MODE_MARKET],
+            label="Export pricing",
+            value=DEFAULTS["export_price_mode"],
+        ).classes("w-full")
+        inputs["export_price_mode"] = mode
+        fixed = _number("Export price", "export_price", inputs, step=0.001, suffix="\u20ac/kWh")
+        fixed.bind_visibility_from(mode, "value", value=EXPORT_MODE_FIXED)
+        with ui.column().classes("w-full gap-1") as market:
+            found = _find_data_file(EXPORT_PRICES_NAME)
+            ui.label(
+                "SI day-ahead prices of the last 365 days (rolling cache, Energy-Charts, "
+                "CC BY 4.0), matched to the consumption by month/day/time whatever its "
+                "year. An uploaded HUPX download / timestamp,price file overrides it."
+            ).classes("text-caption")
+            ui.label().classes("text-caption text-positive").bind_text_from(
+                _price_cache_status, "text"
+            )
+            with ui.row().classes("w-full q-gutter-sm items-center"):
+                label = ui.label(
+                    f"export_prices: {found if Path(found).exists() else 'missing'}"
+                ).classes("text-caption")
+                ui.upload(
+                    label="Upload",
+                    auto_upload=True,
+                    on_upload=lambda e: _handle_upload(e, EXPORT_PRICES_NAME, label),
+                ).props(f"accept={_ACCEPT} flat dense").classes("max-w-[180px]")
+        market.bind_visibility_from(mode, "value", value=EXPORT_MODE_MARKET)
 
 
 def _transmission_section(inputs):
