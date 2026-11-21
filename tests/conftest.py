@@ -145,3 +145,13 @@ def simulator_with_heating(winter_production_csv, winter_consumption_csv):
     sim.load_and_align_data()
     sim.scale_solar_generation()
     return sim
+
+
+@pytest.fixture
+def sunny_production_csv(tmp_path):
+    """Production at baseline scale (640.6 kW peak) so a 20 kW system exports at midday."""
+    hours = np.arange(96) / 4
+    solar = np.clip(np.sin((hours - 6) * np.pi / 12), 0, None) * 640.6
+    path = tmp_path / "sunny_production.csv"
+    pd.DataFrame({"timestamp_id": range(1, 97), "solar_power_kw": solar}).to_csv(path, index=False)
+    return path

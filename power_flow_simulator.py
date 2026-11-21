@@ -81,6 +81,9 @@ from data_readers import (
 
 warnings.filterwarnings("ignore")
 
+# Installed capacity (kWp) of the plant that recorded the bundled production.csv
+DEFAULT_REFERENCE_SOLAR_KW = 640.6
+
 # Initialize joblib memory cache
 memory = Memory(location=".cache", verbose=0)
 
@@ -179,7 +182,7 @@ class PowerFlowSimulator:
         4. Track all energy flows and calculate costs using time-of-use pricing
 
     Equipment Modeling:
-        - Solar panels: Proportional scaling from baseline 640.6kW system
+        - Solar panels: Proportional scaling from the reference system (default 640.6kW)
         - Inverter: Hard power limit with clipping losses
         - Battery: Round-trip efficiency, C-rate power limits, SOC bounds (0-100%)
         - Grid: Import/export with different pricing tiers
@@ -249,6 +252,7 @@ class PowerFlowSimulator:
         price_region: str = "SI",
         export_price_alignment: str = ALIGN_AUTO,
         export_fee_eur_mwh: float = 0.0,
+        reference_solar_kw: float = DEFAULT_REFERENCE_SOLAR_KW,
     ):
         """
         Initialize the power flow simulator
@@ -282,6 +286,9 @@ class PowerFlowSimulator:
                 month/day/time — used with the rolling last-year price cache).
             export_fee_eur_mwh (float): Fee deducted from every exported MWh (EUR/MWh),
                 in both fixed and market pricing (e.g. a supplier's spot margin).
+            reference_solar_kw (float): Installed DC capacity (kWp) of the plant that
+                recorded the production file; generation is scaled by
+                solar_panel_power_kw / reference_solar_kw (default: 640.6).
         """
         # System specifications
         self.solar_panel_power_kw = solar_panel_power_kw
@@ -368,9 +375,10 @@ class PowerFlowSimulator:
         self.interval_hours = 1.0 if time_resolution == "1h" else 0.25
         self.kw_factor = 1.0 if time_resolution == "1h" else 4.0
 
-        # Baseline system (from the data files)
-        self.baseline_solar_kw = 640.6  # 640.6kW solar installation
-        self.baseline_inverter_kw = 532.8  # 532.8kW inverter
+        # Reference system: installed capacity of the plant behind the production file
+        if not reference_solar_kw or reference_solar_kw <= 0:
+            raise ValueError(f"reference_solar_kw must be positive, got {reference_solar_kw!r}")
+        self.baseline_solar_kw = float(reference_solar_kw)
 
         # Data storage
         self.df = None
@@ -428,7 +436,7 @@ class PowerFlowSimulator:
             - Data is expected to be in 15-minute intervals
             - Consumption data units are actually kWh and kW despite column names
             - Peak hours defined as 6am-10pm on weekdays (Monday-Friday)
-            - Baseline system assumption: 640.6kW solar, 532.8kW inverter
+            - Production is scaled from the reference capacity (reference_solar_kw)
         """
         print("\nLoading and aligning data...")
 
@@ -494,9 +502,7 @@ class PowerFlowSimulator:
         print(
             f"Loaded {len(self.df)} data points from {self.df['datetime'].min()} to {self.df['datetime'].max()}"
         )
-        print(
-            f"Baseline system: {self.baseline_solar_kw}kW solar, {self.baseline_inverter_kw}kW inverter"
-        )
+        print(f"Reference system (production file): {self.baseline_solar_kw}kW solar")
         print(f"Max baseline solar output: {self.df['baseline_solar_kw'].max():.1f} kW")
         print(f"Total consumption: {self.df['consumption_kwh'].sum():.1f} kWh/year")
 
@@ -1519,6 +1525,7 @@ def _cached_batch_simulation_func(
     export_price_file: str | None = None,
     export_price_alignment: str = ALIGN_AUTO,
     export_fee_eur_mwh: float = 0.0,
+    reference_solar_kw: float = DEFAULT_REFERENCE_SOLAR_KW,
 ) -> dict[str, Any]:
     """
     Standalone cached simulation function for batch mode to avoid re-running identical simulations.
@@ -1576,6 +1583,7 @@ def _cached_batch_simulation_func(
                 export_price_file=export_price_file,
                 export_price_alignment=export_price_alignment,
                 export_fee_eur_mwh=export_fee_eur_mwh,
+                reference_solar_kw=reference_solar_kw,
             )
 
             # Run simulation
@@ -1713,6 +1721,7 @@ class MultiScenarioAnalyzer:
         export_price_file: str | None = None,
         export_price_alignment: str = ALIGN_AUTO,
         export_fee_eur_mwh: float = 0.0,
+        reference_solar_kw: float = DEFAULT_REFERENCE_SOLAR_KW,
     ):
         """
         Multi-scenario analyzer for solar + battery systems
@@ -1743,6 +1752,7 @@ class MultiScenarioAnalyzer:
             export_price_file (str): Optional market price file; overrides export_price
             export_price_alignment (str): "auto" or "calendar", see PowerFlowSimulator
             export_fee_eur_mwh (float): Fee deducted per exported MWh (EUR/MWh)
+            reference_solar_kw (float): Installed capacity (kWp) behind the production file
         """
         self.solar_range = solar_range or [5, 8.5, 10, 15, 20]
         self.inverter_range = inverter_range or [5, 8, 10, 15]
@@ -1755,6 +1765,7 @@ class MultiScenarioAnalyzer:
         self.export_price_file = export_price_file or None
         self.export_price_alignment = export_price_alignment
         self.export_fee_eur_mwh = export_fee_eur_mwh
+        self.reference_solar_kw = reference_solar_kw
         self.solar_cost_per_kw = solar_cost_per_kw
         self.inverter_cost_per_kw = inverter_cost_per_kw
         self.battery_cost_per_kwh = battery_cost_per_kwh
@@ -1903,6 +1914,7 @@ class MultiScenarioAnalyzer:
             export_price_file=self.export_price_file,
             export_price_alignment=self.export_price_alignment,
             export_fee_eur_mwh=self.export_fee_eur_mwh,
+            reference_solar_kw=self.reference_solar_kw,
         )
 
     def run_all_scenarios(self) -> list[dict[str, Any]]:
@@ -2842,6 +2854,7 @@ class MultiScenarioAnalyzer:
                     export_price_file=self.export_price_file,
                     export_price_alignment=self.export_price_alignment,
                     export_fee_eur_mwh=self.export_fee_eur_mwh,
+                    reference_solar_kw=self.reference_solar_kw,
                 )
 
                 if result["simulation_failed"]:
@@ -3496,6 +3509,13 @@ def main():
         f"{', '.join(SUPPORTED_EXTENSIONS)} (default: production.csv)",
     )
     parser.add_argument(
+        "--reference-solar-power",
+        type=float,
+        default=DEFAULT_REFERENCE_SOLAR_KW,
+        help="Installed capacity (kWp) of the plant that recorded the production file; "
+        f"generation is scaled from it to --solar-power (default: {DEFAULT_REFERENCE_SOLAR_KW})",
+    )
+    parser.add_argument(
         "--consumption-file",
         default="consumption.csv",
         help="Consumption file, legacy layout or smart-meter export: "
@@ -3621,6 +3641,7 @@ def main():
             export_price_file=args.export_price_file,
             export_price_alignment=export_price_alignment,
             export_fee_eur_mwh=args.export_fee,
+            reference_solar_kw=args.reference_solar_power,
             production_file=args.production_file,
             consumption_file=args.consumption_file,
         )
@@ -3734,6 +3755,7 @@ def main():
             export_price_file=args.export_price_file,
             export_price_alignment=export_price_alignment,
             export_fee_eur_mwh=args.export_fee,
+            reference_solar_kw=args.reference_solar_power,
             production_file=args.production_file,
             consumption_file=args.consumption_file,
         )
