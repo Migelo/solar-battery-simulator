@@ -58,6 +58,7 @@ import datetime
 import hashlib
 import os
 import warnings
+from collections.abc import Callable
 from itertools import product
 from typing import Any
 
@@ -1886,8 +1887,14 @@ class MultiScenarioAnalyzer:
             reference_solar_kw=self.reference_solar_kw,
         )
 
-    def run_all_scenarios(self) -> list[dict[str, Any]]:
-        """Run simulations for all scenarios"""
+    def run_all_scenarios(
+        self, should_stop: Callable[[], bool] | None = None
+    ) -> list[dict[str, Any]]:
+        """Run simulations for all scenarios.
+
+        ``should_stop`` is checked before each scenario; when it returns True the loop ends
+        early and the results gathered so far are kept.
+        """
         if not self.scenarios:
             self.generate_scenarios()
 
@@ -1900,6 +1907,9 @@ class MultiScenarioAnalyzer:
             unit="scenario",
             postfix=f"Total: {len(self.scenarios)}",
         ):
+            if should_stop is not None and should_stop():
+                print("  Stopped by request")
+                break
             # Use cached simulation
             cached_result = self._cached_batch_simulation(
                 solar_kw=scenario["solar_panel_power_kw"],
