@@ -726,23 +726,13 @@ async def run_batch_analysis(params: dict, results_container, spinner):
                 fig.tight_layout()
                 plots["npv"] = fig_to_png_bytes(fig)
 
-        # Comparison table data
-        table_rows = []
-        for r in sorted(analyzer.results, key=lambda x: x["savings_vs_baseline"], reverse=True):
-            table_rows.append(
-                {
-                    "Solar (kW)": r["solar_panel_power_kw"],
-                    "Inverter (kW)": r["inverter_power_kw"],
-                    "Battery (kWh)": r["battery_capacity_kwh"],
-                    "Savings (\u20ac/yr)": f"{r['savings_vs_baseline']:,.0f}",
-                    "Payback (yr)": f"{r['payback_years']:.1f}",
-                    "NPV 20yr (\u20ac)": f"{r.get('npv_20_years', 0):,.0f}",
-                    "Self-Suff (%)": f"{r.get('self_sufficiency_percent', 0):.1f}",
-                    "Investment (\u20ac)": f"{r.get('total_investment', 0):,.0f}",
-                }
-            )
-
-        return {"plots": plots, "table_rows": table_rows, "n_scenarios": len(analyzer.results)}
+        comparison_df = comparison_dataframe(analyzer.results)
+        return {
+            "plots": plots,
+            "comparison_df": comparison_df,
+            "table_rows": comparison_table_rows(comparison_df),
+            "n_scenarios": len(analyzer.results),
+        }
 
     try:
         result = await asyncio.to_thread(_run)
@@ -791,7 +781,102 @@ async def run_batch_analysis(params: dict, results_container, spinner):
                 {"name": k, "label": k, "field": k, "sortable": True}
                 for k in result["table_rows"][0]
             ]
+            comparison_df = result["comparison_df"]
+            with ui.row().classes("q-mt-sm items-center"):
+                ui.button(
+                    "Download Excel",
+                    icon="download",
+                    on_click=lambda: ui.download.content(
+                        comparison_xlsx_bytes(comparison_df), "scenario_comparison.xlsx"
+                    ),
+                ).props("outline")
+                ui.button(
+                    "Download CSV",
+                    icon="download",
+                    on_click=lambda: ui.download.content(
+                        comparison_csv_bytes(comparison_df), "scenario_comparison.csv"
+                    ),
+                ).props("outline")
             ui.table(columns=columns, rows=result["table_rows"]).classes("q-mt-sm")
+
+
+# ---------------------------------------------------------------------------
+# Scenario comparison table + Slovenian-locale exports
+# ---------------------------------------------------------------------------
+# (column label, result key, decimals shown in the GUI table / Excel number format)
+COMPARISON_COLUMNS: list[tuple[str, str, int]] = [
+    ("Solar (kW)", "solar_panel_power_kw", 1),
+    ("Inverter (kW)", "inverter_power_kw", 1),
+    ("Battery (kWh)", "battery_capacity_kwh", 1),
+    ("Savings (\u20ac/yr)", "savings_vs_baseline", 0),
+    ("Payback (yr)", "payback_years", 1),
+    ("NPV 20yr (\u20ac)", "npv_20_years", 0),
+    ("Self-Suff (%)", "self_sufficiency_percent", 1),
+    ("Investment (\u20ac)", "total_investment", 0),
+    ("Solar produced (kWh)", "annual_solar_generation", 0),
+    ("Exported (kWh)", "annual_grid_export", 0),
+    ("Imported (kWh)", "annual_grid_import", 0),
+    ("Consumed (kWh)", "annual_consumption", 0),
+    ("Variable cost (\u20ac/yr)", "variable_energy_cost", 0),
+    ("Fixed cost (\u20ac/yr)", "fixed_cost", 0),
+]
+
+
+def comparison_dataframe(results: list[dict]) -> pd.DataFrame:
+    """Numeric scenario comparison, best savings first.
+
+    Variable cost = imported kWh x (energy price + transmission block rate); fixed cost =
+    monthly power fees + OVE-SPTE, both for the solar+battery system.
+    """
+    rows = sorted(results, key=lambda r: r["savings_vs_baseline"], reverse=True)
+    return pd.DataFrame(
+        [{label: float(r.get(key, 0.0)) for label, key, _ in COMPARISON_COLUMNS} for r in rows],
+        columns=[label for label, _, _ in COMPARISON_COLUMNS],
+    )
+
+
+def comparison_table_rows(df: pd.DataFrame) -> list[dict]:
+    """Display rows for ``ui.table`` (thousands separators, fixed decimals)."""
+    rows = []
+    for record in df.to_dict("records"):
+        row = {}
+        for label, _, decimals in COMPARISON_COLUMNS:
+            value = record[label]
+            if label in ("Solar (kW)", "Inverter (kW)", "Battery (kWh)"):
+                row[label] = value
+            else:
+                row[label] = f"{value:,.{decimals}f}"
+        rows.append(row)
+    return rows
+
+
+def comparison_csv_bytes(df: pd.DataFrame) -> bytes:
+    """CSV in Slovenian locale: ``;`` delimiter, decimal comma, UTF-8 BOM for Excel."""
+    rounded = df.round({label: max(d, 2) for label, _, d in COMPARISON_COLUMNS})
+    text = rounded.to_csv(sep=";", decimal=",", index=False, lineterminator="\r\n")
+    return text.encode("utf-8-sig")
+
+
+def comparison_xlsx_bytes(df: pd.DataFrame) -> bytes:
+    """Excel workbook with real numbers in number-formatted cells.
+
+    Values stay numeric (sortable, usable in formulas); Excel draws the decimal separator
+    from the viewer's locale, so a Slovenian Excel shows ``1.234,5``.
+    """
+    from openpyxl.utils import get_column_letter
+
+    buf = io.BytesIO()
+    with pd.ExcelWriter(buf, engine="openpyxl") as writer:
+        df.to_excel(writer, index=False, sheet_name="Scenarios")
+        ws = writer.sheets["Scenarios"]
+        ws.freeze_panes = "A2"
+        for idx, (label, _, decimals) in enumerate(COMPARISON_COLUMNS, start=1):
+            fmt = "#,##0" + ("." + "0" * decimals if decimals else "")
+            letter = get_column_letter(idx)
+            for (cell,) in ws.iter_rows(min_row=2, min_col=idx, max_col=idx):
+                cell.number_format = fmt
+            ws.column_dimensions[letter].width = max(12, len(label) + 2)
+    return buf.getvalue()
 
 
 # ---------------------------------------------------------------------------

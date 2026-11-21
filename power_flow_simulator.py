@@ -1081,6 +1081,9 @@ class PowerFlowSimulator:
         net_cost_battery = (
             grid_import_cost - export_revenue + annual_ove_spte_cost + annual_monthly_power_fees
         )
+        # Solar+battery breakdown: per-kWh (energy + transmission) vs per-kW (fixed) charges
+        system_ove_spte_cost = annual_ove_spte_cost
+        system_power_fee_cost = annual_monthly_power_fees
 
         # Calculate baseline cost (no battery, no solar) with transmission costs
         # def get_baseline_total_price(row):
@@ -1142,6 +1145,10 @@ class PowerFlowSimulator:
             "export_fee_cost": export_fee_cost,
             "export_kwh": total_export_kwh,
             "avg_export_price": avg_export_price,
+            "variable_energy_cost": float(grid_import_cost),
+            "power_fee_cost": float(system_power_fee_cost),
+            "ove_spte_cost": float(system_ove_spte_cost),
+            "fixed_cost": float(system_power_fee_cost + system_ove_spte_cost),
         }
 
     def calculate_transmission_cost_breakdown(self) -> dict[str, dict[str, float]]:
@@ -1565,6 +1572,8 @@ def _cached_batch_simulation_func(
 
         return {
             "simulation_failed": False,
+            # Bump when cost_analysis gains fields so joblib drops older cached results
+            "result_version": 2,
             "cost_analysis": cost_analysis,
             "simulation_results": simulator.simulation_results.copy()
             if simulator.simulation_results is not None
