@@ -21,8 +21,6 @@ Input Data Requirements:
 
 Output Files Generated:
     Single Mode:
-        - power_flow_analysis_7days.png: Power flow visualization
-        - monthly_energy_analysis.png: Monthly energy breakdown
         - power_flow_simulation_results.csv: Detailed simulation data
         - system_summary.csv: System configuration and performance summary
 
@@ -31,10 +29,9 @@ Output Files Generated:
         - multi_scenario_savings_heatmap.png: Annual savings across configurations
         - multi_scenario_roi_heatmap.png: Payback period analysis
         - multi_scenario_self_sufficiency_heatmap.png: Energy independence analysis
+        - multi_scenario_npv_heatmap.png: 20-year NPV across configurations
         - multi_scenario_pareto_analysis.png: Investment vs savings optimization
-        # - multi_scenario_soc_time_365days.png: Battery SOC organized by battery capacity (disabled)
-        # - soc_[solar]kW_solar_[inverter]kW_inverter_365days.png: Individual SOC plots for each solar+inverter combination (disabled)
-        - multi_scenario_comprehensive_results.csv: Complete results dataset
+        - multi_scenario_comprehensive_results.xlsx (or .csv): Complete results dataset
 
 Usage Examples:
     Single scenario analysis:
@@ -3153,8 +3150,6 @@ class MultiScenarioAnalyzer:
         self.create_npv_heatmap()
         self.create_self_sufficiency_heatmap()
         self.create_pareto_analysis()
-        # self.create_soc_time_plot()  # Disabled - large file generation
-        # self.create_soc_by_solar_inverter_plot()  # Disabled - generates many individual files
 
         # Export comprehensive results
         self.export_comprehensive_results()
@@ -3172,8 +3167,6 @@ class MultiScenarioAnalyzer:
         print(f"- multi_scenario_self_sufficiency_heatmap{params_str}.png")
         print(f"- multi_scenario_npv_heatmap{params_str}.png")
         print("- multi_scenario_pareto_analysis.png")
-        # print("- multi_scenario_soc_time_365days.png")  # Disabled
-        # print("- soc_[solar]kW_solar_[inverter]kW_inverter_monthly.png (multiple files)")  # Disabled
         print("- multi_scenario_comprehensive_results.xlsx (or .csv)")
 
 
@@ -3797,17 +3790,10 @@ def main():
                 f"  Annual OVE-SPTE cost: €{ove_spte_breakdown['annual_ove_spte_cost_eur']:>6.2f}"
             )
 
-        # Create visualizations and analysis
-        # simulator.create_power_flow_visualization(days_to_show=7)
-        # _ = simulator.create_monthly_analysis()  # TODO: implement
-        # simulator.create_monthly_solar_daily_plot()  # TODO: implement
         simulator.export_results()
 
         print("\nSimulation complete!")
         print("\nGenerated files:")
-        print("- power_flow_analysis_7days.png")
-        print("- monthly_energy_analysis.png")
-        print("- monthly_solar_daily_production.png")
         print("- power_flow_simulation_results.csv")
         print("- system_summary.csv")
 
