@@ -9,6 +9,8 @@ RUN uv sync --frozen --no-dev
 
 COPY data_readers.py power_flow_simulator.py price_cache.py gui.py ./
 
+ENV GUI_HOST=0.0.0.0 GUI_OPEN_BROWSER=0
+
 EXPOSE 8080
 
 CMD ["uv", "run", "gui.py"]

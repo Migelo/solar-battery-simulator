@@ -11,6 +11,22 @@ A Python tool for simulating and optimizing solar photovoltaic (PV) systems with
 - **Heating load modeling** - Simulate adding heat pump load to existing consumption
 - **Slovenian tariff support** - 5-block transmission costs, OVE-SPTE fees, seasonal pricing
 
+## Windows: one-click start
+
+1. On GitHub click **Code → Download ZIP** and extract it (or `git clone`).
+2. Double-click **`start_windows.bat`**. If Windows warns about a downloaded file, choose
+   **More info → Run anyway**.
+3. Your browser opens the simulator at <http://localhost:8080>. Keep the black window open
+   while you work; close it to stop.
+
+The first start installs [uv](https://docs.astral.sh/uv/), which downloads Python and the
+dependencies (internet needed, a few minutes). Later starts take seconds. Put your production
+and consumption files in `data/` or upload them in the GUI. If port 8080 is taken, run
+`set GUI_PORT=8090 & start_windows.bat` from a command prompt.
+
+The simulator only accepts connections from the same PC (`127.0.0.1`), so no firewall prompt
+appears and nobody else on your network can open it.
+
 ## Installation
 
 Requires Python 3.12+ and [uv](https://github.com/astral-sh/uv).

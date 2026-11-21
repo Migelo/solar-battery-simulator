@@ -1,0 +1,3 @@
+# Batch files must keep CRLF line endings (cmd.exe mis-parses labels with LF); stored as-is.
+*.bat -text
+*.cmd -text

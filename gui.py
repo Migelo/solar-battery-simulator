@@ -1079,8 +1079,11 @@ def index():
 if __name__ in {"__main__", "__mp_main__"}:
     ui.run(
         title="Solar Battery Simulator",
-        host="0.0.0.0",
-        port=8080,
+        # Localhost only by default: nobody else on the network can connect. The Docker image
+        # sets GUI_HOST=0.0.0.0 inside the container; compose publishes it on 127.0.0.1 only.
+        host=os.environ.get("GUI_HOST", "127.0.0.1"),
+        port=int(os.environ.get("GUI_PORT", "8080")),
+        show=os.environ.get("GUI_OPEN_BROWSER", "1") != "0",
         reload=False,
         storage_secret=os.environ.get("NICEGUI_STORAGE_SECRET", "solar-sim-dev-only"),
     )
