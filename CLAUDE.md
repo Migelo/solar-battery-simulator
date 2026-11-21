@@ -82,6 +82,7 @@ uv sync --extra test
 - Generates all valid (solar × inverter × battery) scenarios (constraint: inverter ≤ solar)
 - Runs each through `PowerFlowSimulator` with joblib caching (`_cached_batch_simulation_func`); the cache key includes a SHA-256 of both input files (`_input_fingerprint`), so replacing a file under the same path invalidates it
 - Calculates ROI, NPV (20-year, `calculate_npv_20_years`), payback periods, loan amortization. `loan_years <= 0` = no loan: investment paid in cash at year 0 (GUI "Use loan" switch in Batch → Financial, CLI `--loan-years 0`)
+- One-off subsidies (`SubsidyConfig`, `subsidy=`): EUR/kW solar, EUR/kW inverter, EUR/kWh battery (only if battery kWh / basis kW is within min..max ratio, default 0.5–2.5; basis `solar`/`inverter`/`sum`), optional cap as a fraction of gross investment. `calculate_investment()` returns `gross_investment`, `subsidy*`, and `total_investment` = gross − subsidy, which drives payback, loan principal and NPV; the 1 % maintenance stays on the gross value. GUI: batch "Subsidies" section (master switch + per-part switches), CLI `--subsidy-*`. Tests: `tests/test_subsidies.py`
 - Produces heatmap visualizations (savings, ROI, self-sufficiency, Pareto)
 - `optimize_npv_differential_evolution()`: scipy-based optimization for optimal system configuration
 

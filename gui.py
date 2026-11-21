@@ -23,9 +23,11 @@ from data_readers import (
     load_network_tariffs,
 )
 from power_flow_simulator import (
+    BATTERY_SUBSIDY_BASES,
     DEFAULT_REFERENCE_SOLAR_KW,
     MultiScenarioAnalyzer,
     PowerFlowSimulator,
+    SubsidyConfig,
 )
 from price_cache import DEFAULT_CACHE_DIR, cached_price_file, market_price_file, update_price_cache
 
@@ -605,6 +607,7 @@ async def run_batch_analysis(
             discount_rate=params["discount_rate"],
             loan_rate=params["loan_rate"],
             loan_years=_loan_years(params),
+            subsidy=_subsidy_config(params),
             transmission_costs=transmission_costs,
             monthly_power_fees=monthly_power_fees,
             ove_spte_fee=params["ove_spte_fee"],
@@ -828,6 +831,7 @@ COMPARISON_COLUMNS: list[tuple[str, str, int]] = [
     ("NPV 20yr (\u20ac)", "npv_20_years", 0),
     ("Self-Suff (%)", "self_sufficiency_percent", 1),
     ("Investment (\u20ac)", "total_investment", 0),
+    ("Subsidy (\u20ac)", "subsidy", 0),
     ("Solar produced (kWh)", "annual_solar_generation", 0),
     ("Exported (kWh)", "annual_grid_export", 0),
     ("Imported (kWh)", "annual_grid_import", 0),
@@ -963,7 +967,51 @@ DEFAULTS = {
     "use_loan": True,
     "loan_rate": 0.03,
     "loan_years": 10,
+    # One-off investment subsidies (batch)
+    "use_subsidies": False,
+    "subsidy_solar_enabled": True,
+    "subsidy_solar_per_kw": 0.0,
+    "subsidy_inverter_enabled": False,
+    "subsidy_inverter_per_kw": 0.0,
+    "subsidy_battery_enabled": True,
+    "subsidy_battery_per_kwh": 0.0,
+    "subsidy_battery_min_ratio": 0.5,
+    "subsidy_battery_max_ratio": 2.5,
+    "subsidy_battery_basis": "solar",
+    "subsidy_cap_enabled": False,
+    "subsidy_cap_fraction": 0.5,
 }
+
+SUBSIDY_BASIS_LABELS = {
+    "solar": "Solar kW",
+    "inverter": "Inverter kW",
+    "sum": "Solar + inverter kW",
+}
+assert set(SUBSIDY_BASIS_LABELS) == set(BATTERY_SUBSIDY_BASES)
+
+
+def _subsidy_config(params: dict) -> SubsidyConfig:
+    """Subsidies for the analyzer; all off unless the "Apply subsidies" switch is on."""
+    if not params.get("use_subsidies"):
+        return SubsidyConfig()
+
+    def num(key: str) -> float:
+        value = params.get(key, DEFAULTS[key])
+        return float(DEFAULTS[key] if value is None else value)
+
+    return SubsidyConfig(
+        solar_enabled=bool(params.get("subsidy_solar_enabled")),
+        solar_eur_per_kw=num("subsidy_solar_per_kw"),
+        inverter_enabled=bool(params.get("subsidy_inverter_enabled")),
+        inverter_eur_per_kw=num("subsidy_inverter_per_kw"),
+        battery_enabled=bool(params.get("subsidy_battery_enabled")),
+        battery_eur_per_kwh=num("subsidy_battery_per_kwh"),
+        battery_min_ratio=num("subsidy_battery_min_ratio"),
+        battery_max_ratio=num("subsidy_battery_max_ratio"),
+        battery_basis=params.get("subsidy_battery_basis") or DEFAULTS["subsidy_battery_basis"],
+        cap_enabled=bool(params.get("subsidy_cap_enabled")),
+        cap_fraction=num("subsidy_cap_fraction"),
+    )
 
 
 def _loan_years(params: dict) -> int:
@@ -1216,6 +1264,46 @@ def _financial_section(inputs):
     return section
 
 
+def _subsidies_section(inputs):
+    with ui.expansion("Subsidies", icon="savings").classes("w-full").props("dense") as section:
+        use = ui.switch("Apply subsidies", value=DEFAULTS["use_subsidies"])
+        use.tooltip("One-off payments deducted from the initial investment")
+        inputs["use_subsidies"] = use
+        with ui.column().classes("w-full gap-1") as body:
+
+            def part(label: str, key: str, suffix: str):
+                with ui.row().classes("w-full items-center no-wrap gap-1"):
+                    sw = ui.switch(value=DEFAULTS[f"{key}_enabled"])
+                    inputs[f"{key}_enabled"] = sw
+                    rate_key = key + ("_per_kwh" if suffix.endswith("kWh") else "_per_kw")
+                    n = _number(label, rate_key, inputs, step=10, min=0, suffix=suffix)
+                    n.classes("grow").bind_enabled_from(sw, "value")
+                return sw
+
+            part("Solar", "subsidy_solar", "\u20ac/kW")
+            part("Inverter", "subsidy_inverter", "\u20ac/kW")
+            battery = part("Battery", "subsidy_battery", "\u20ac/kWh")
+            ui.label("Battery subsidy only if kWh per kW is within").classes("text-caption")
+            with ui.row().classes("w-full items-center no-wrap gap-1") as ratio_row:
+                _number("Min", "subsidy_battery_min_ratio", inputs, step=0.1, min=0)
+                _number("Max", "subsidy_battery_max_ratio", inputs, step=0.1, min=0)
+                inputs["subsidy_battery_basis"] = ui.select(
+                    options=SUBSIDY_BASIS_LABELS,
+                    label="of",
+                    value=DEFAULTS["subsidy_battery_basis"],
+                ).classes("grow")
+            for el in ratio_row.default_slot.children:
+                el.bind_enabled_from(battery, "value")
+            with ui.row().classes("w-full items-center no-wrap gap-1"):
+                cap = ui.switch("Cap", value=DEFAULTS["subsidy_cap_enabled"])
+                cap.tooltip("Limit the total subsidy to a fraction of the investment")
+                inputs["subsidy_cap_enabled"] = cap
+                frac = _number("Max fraction", "subsidy_cap_fraction", inputs, step=0.05, min=0)
+                frac.classes("grow").bind_enabled_from(cap, "value")
+        body.bind_visibility_from(use, "value")
+    return section
+
+
 # ---------------------------------------------------------------------------
 # Page layout
 # ---------------------------------------------------------------------------
@@ -1223,7 +1311,7 @@ def _financial_section(inputs):
 def index():
     # One sidebar for both tabs: every input exists once, so the tabs always share their
     # values. Each tab shows the sections it had before: System Specs is single-only;
-    # Parameter Ranges, Battery, Equipment Costs and Financial are batch-only.
+    # Parameter Ranges, Battery, Equipment Costs, Financial and Subsidies are batch-only.
     inputs: dict = {}
     app.storage.user.setdefault("dark_mode", True)
     ui.dark_mode().bind_value(app.storage.user, "dark_mode")
@@ -1308,6 +1396,7 @@ def index():
                     _only_on(_battery_section(inputs), tabs, BATCH_TAB)
                     _only_on(_equipment_costs_section(inputs), tabs, BATCH_TAB)
                     _only_on(_financial_section(inputs), tabs, BATCH_TAB)
+                    _only_on(_subsidies_section(inputs), tabs, BATCH_TAB)
                     _pricing_section(inputs)
                     _transmission_section(inputs)
                     _smoothing_section(inputs)
