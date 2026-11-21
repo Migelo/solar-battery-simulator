@@ -3186,6 +3186,35 @@ class MultiScenarioAnalyzer:
         print("- multi_scenario_comprehensive_results.xlsx (or .csv)")
 
 
+# Rates used by --tariff-group manual for per-block flags that are not given.
+MANUAL_TRANSMISSION_DEFAULTS = (0.01282, 0.01216, 0.01186, 0.01164, 0.01175)
+MANUAL_POWER_FEE_DEFAULTS = (3.75969, 1.05262, 0.12837, 0.0, 0.0)
+
+
+def _manual_tariff_flags_error(args) -> str | None:
+    """Error text if per-block tariff flags are given without --tariff-group manual.
+
+    In manual mode, fills the flags that were not given with the manual defaults.
+    """
+    given = [
+        f"--{kind.replace('_', '-')}{i}"
+        for kind in ("transmission_block", "power_fee_block")
+        for i in range(1, 6)
+        if getattr(args, f"{kind}{i}") is not None
+    ]
+    if args.tariff_group.lower() != "manual":
+        if given:
+            verb = "requires" if len(given) == 1 else "require"
+            return f"{', '.join(given)} {verb} --tariff-group manual"
+        return None
+    for i in range(1, 6):
+        if getattr(args, f"transmission_block{i}") is None:
+            setattr(args, f"transmission_block{i}", MANUAL_TRANSMISSION_DEFAULTS[i - 1])
+        if getattr(args, f"power_fee_block{i}") is None:
+            setattr(args, f"power_fee_block{i}", MANUAL_POWER_FEE_DEFAULTS[i - 1])
+    return None
+
+
 def _cli_network_tariffs(args) -> tuple[dict[str, float], dict[str, float]]:
     """(transmission_costs, monthly_power_fees) from --tariff-group or the manual flags."""
     if args.tariff_group.lower() == "manual":
@@ -3356,64 +3385,64 @@ def main():
     parser.add_argument(
         "--transmission-block1",
         type=float,
-        default=0.01282,
-        help="Block 1 transmission cost in EUR/kWh (default: 0.01282)",
+        default=None,
+        help="Block 1 transmission cost in EUR/kWh (needs --tariff-group manual; default: 0.01282)",
     )
     parser.add_argument(
         "--transmission-block2",
         type=float,
-        default=0.01216,
-        help="Block 2 transmission cost in EUR/kWh (default: 0.01216)",
+        default=None,
+        help="Block 2 transmission cost in EUR/kWh (needs --tariff-group manual; default: 0.01216)",
     )
     parser.add_argument(
         "--transmission-block3",
         type=float,
-        default=0.01186,
-        help="Block 3 transmission cost in EUR/kWh (default: 0.01186)",
+        default=None,
+        help="Block 3 transmission cost in EUR/kWh (needs --tariff-group manual; default: 0.01186)",
     )
     parser.add_argument(
         "--transmission-block4",
         type=float,
-        default=0.01164,
-        help="Block 4 transmission cost in EUR/kWh (default: 0.01164)",
+        default=None,
+        help="Block 4 transmission cost in EUR/kWh (needs --tariff-group manual; default: 0.01164)",
     )
     parser.add_argument(
         "--transmission-block5",
         type=float,
-        default=0.01175,
-        help="Block 5 transmission cost in EUR/kWh (default: 0.01175)",
+        default=None,
+        help="Block 5 transmission cost in EUR/kWh (needs --tariff-group manual; default: 0.01175)",
     )
 
     # Monthly power fees
     parser.add_argument(
         "--power-fee-block1",
         type=float,
-        default=3.75969,
-        help="Block 1 monthly power fee in EUR/kW/month (default: 3.75969)",
+        default=None,
+        help="Block 1 monthly power fee in EUR/kW/month (needs --tariff-group manual; default: 3.75969)",
     )
     parser.add_argument(
         "--power-fee-block2",
         type=float,
-        default=1.05262,
-        help="Block 2 monthly power fee in EUR/kW/month (default: 1.05262)",
+        default=None,
+        help="Block 2 monthly power fee in EUR/kW/month (needs --tariff-group manual; default: 1.05262)",
     )
     parser.add_argument(
         "--power-fee-block3",
         type=float,
-        default=0.12837,
-        help="Block 3 monthly power fee in EUR/kW/month (default: 0.12837)",
+        default=None,
+        help="Block 3 monthly power fee in EUR/kW/month (needs --tariff-group manual; default: 0.12837)",
     )
     parser.add_argument(
         "--power-fee-block4",
         type=float,
-        default=0.0,
-        help="Block 4 monthly power fee in EUR/kW/month (default: 0.0)",
+        default=None,
+        help="Block 4 monthly power fee in EUR/kW/month (needs --tariff-group manual; default: 0.0)",
     )
     parser.add_argument(
         "--power-fee-block5",
         type=float,
-        default=0.0,
-        help="Block 5 monthly power fee in EUR/kW/month (default: 0.0)",
+        default=None,
+        help="Block 5 monthly power fee in EUR/kW/month (needs --tariff-group manual; default: 0.0)",
     )
 
     # OVE-SPTE fee
@@ -3561,6 +3590,8 @@ def main():
         f"{', '.join(SUPPORTED_EXTENSIONS)} (default: consumption.csv)",
     )
     args = parser.parse_args()
+    if tariff_error := _manual_tariff_flags_error(args):
+        parser.error(tariff_error)
 
     # Export pricing: own price file > market (last-year cache) > fixed price (default)
     export_price_alignment = ALIGN_AUTO

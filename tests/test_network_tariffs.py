@@ -1,5 +1,7 @@
 """Tests for the network tariff file (cenikOmreznin.csv) and its GUI / CLI wiring."""
 
+import subprocess
+import sys
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -8,7 +10,12 @@ import pytest
 
 import gui
 from data_readers import DEFAULT_TARIFF_GROUP, NETWORK_TARIFF_FILE, load_network_tariffs
-from power_flow_simulator import _cli_network_tariffs
+from power_flow_simulator import (
+    MANUAL_POWER_FEE_DEFAULTS,
+    MANUAL_TRANSMISSION_DEFAULTS,
+    _cli_network_tariffs,
+    _manual_tariff_flags_error,
+)
 
 REPO_TARIFFS = Path(__file__).parent.parent / NETWORK_TARIFF_FILE
 BLOCKS = [f"block{i}" for i in range(1, 6)]
@@ -155,3 +162,38 @@ class TestCliTariffs:
     def test_unknown_group_exits(self):
         with pytest.raises(SystemExit):
             _cli_network_tariffs(self._args(tariff_group="9"))
+
+
+class TestManualTariffFlags:
+    def _args(self, group=DEFAULT_TARIFF_GROUP, **kw):
+        base = {f"transmission_block{i}": None for i in range(1, 6)}
+        base |= {f"power_fee_block{i}": None for i in range(1, 6)}
+        return SimpleNamespace(**(base | {"tariff_group": group} | kw))
+
+    def test_no_flags_with_group_ok(self):
+        assert _manual_tariff_flags_error(self._args()) is None
+
+    def test_flag_without_manual_is_error(self):
+        err = _manual_tariff_flags_error(self._args(transmission_block2=0.02, power_fee_block1=3))
+        assert err is not None
+        assert "--transmission-block2" in err
+        assert "--power-fee-block1" in err
+        assert "--tariff-group manual" in err
+
+    def test_manual_fills_missing_with_defaults(self):
+        args = self._args(group="manual", transmission_block1=0.5)
+        assert _manual_tariff_flags_error(args) is None
+        tc, pf = _cli_network_tariffs(args)
+        assert tc["block1"] == 0.5
+        assert tc["block2"] == MANUAL_TRANSMISSION_DEFAULTS[1]
+        assert pf["block1"] == MANUAL_POWER_FEE_DEFAULTS[0]
+
+    def test_cli_rejects_flag_without_manual(self):
+        result = subprocess.run(
+            [sys.executable, "power_flow_simulator.py", "--transmission-block1", "0.02"],
+            cwd=REPO_TARIFFS.parent,
+            capture_output=True,
+            text=True,
+        )
+        assert result.returncode == 2
+        assert "requires --tariff-group manual" in result.stderr
