@@ -12,6 +12,7 @@ import matplotlib.pyplot as plt
 import pandas as pd
 from nicegui import app, ui
 
+from data_readers import SUPPORTED_EXTENSIONS
 from power_flow_simulator import MultiScenarioAnalyzer, PowerFlowSimulator
 
 matplotlib.use("Agg")
@@ -32,23 +33,47 @@ _GUI_PLOT_RC = {
     "savefig.facecolor": "#1d1d1d",
 }
 
+_ACCEPT = ",".join(SUPPORTED_EXTENSIONS)
+
 # Persistent temp dir for uploaded files (lives for the process lifetime)
 _upload_dir = Path(tempfile.mkdtemp(prefix="solar_sim_"))
 
 
+def _candidate_names(name: str) -> list[str]:
+    """``name`` first, then the same stem with every other supported extension."""
+    stem = Path(name).stem
+    return [name] + [f"{stem}{ext}" for ext in SUPPORTED_EXTENSIONS if f"{stem}{ext}" != name]
+
+
 def _find_data_file(name: str) -> str:
-    """Locate a data file: uploaded files first, then data/ subdir, then cwd."""
-    for candidate in [_upload_dir / name, Path("data") / name, Path(name)]:
-        if candidate.exists():
-            return str(candidate)
+    """Locate a data file: uploaded files first, then data/ subdir, then cwd.
+
+    Any supported extension (CSV, XLSX, XLSM, XLS) is accepted for the given stem,
+    so ``"consumption.csv"`` also finds ``consumption.xlsx``.
+    """
+    for directory in (_upload_dir, Path("data"), None):
+        for candidate_name in _candidate_names(name):
+            candidate = directory / candidate_name if directory else Path(candidate_name)
+            if candidate.exists():
+                return str(candidate)
     return str(Path("data") / name)
 
 
 def _handle_upload(event, target_name: str, label_widget) -> None:
-    """Save an uploaded file and update the label."""
-    dest = _upload_dir / target_name
+    """Save an uploaded file under ``target_name``'s stem, keeping its own extension."""
+    ext = Path(event.name).suffix.lower()
+    if ext not in SUPPORTED_EXTENSIONS:
+        label_widget.text = (
+            f"{event.name}: unsupported type (use {', '.join(SUPPORTED_EXTENSIONS)})"
+        )
+        return
+    stem = Path(target_name).stem
+    # Remove earlier uploads of this input in other formats so they can't shadow it.
+    for old_ext in SUPPORTED_EXTENSIONS:
+        (_upload_dir / f"{stem}{old_ext}").unlink(missing_ok=True)
+    dest = _upload_dir / f"{stem}{ext}"
     dest.write_bytes(event.content.read())
-    label_widget.text = f"{target_name}: {event.name}"
+    label_widget.text = f"{stem}: {event.name}"
 
 
 def _data_files_section():
@@ -63,29 +88,29 @@ def _data_files_section():
         if both_found:
             ui.label(f"Using: {prod_found}, {cons_found}").classes("text-caption text-positive")
         else:
-            ui.label("Upload production.csv and consumption.csv").classes(
+            ui.label("Upload production and consumption files (CSV, XLSX or XLS)").classes(
                 "text-caption text-warning"
             )
 
         with ui.row().classes("w-full q-gutter-sm items-center"):
-            prod_label = ui.label(
-                f"production.csv: {'found' if prod_exists else 'missing'}"
-            ).classes("text-caption")
+            prod_label = ui.label(f"production: {'found' if prod_exists else 'missing'}").classes(
+                "text-caption"
+            )
             ui.upload(
                 label="Upload",
                 auto_upload=True,
                 on_upload=lambda e: _handle_upload(e, "production.csv", prod_label),
-            ).props("accept=.csv flat dense").classes("max-w-[180px]")
+            ).props(f"accept={_ACCEPT} flat dense").classes("max-w-[180px]")
 
         with ui.row().classes("w-full q-gutter-sm items-center"):
-            cons_label = ui.label(
-                f"consumption.csv: {'found' if cons_exists else 'missing'}"
-            ).classes("text-caption")
+            cons_label = ui.label(f"consumption: {'found' if cons_exists else 'missing'}").classes(
+                "text-caption"
+            )
             ui.upload(
                 label="Upload",
                 auto_upload=True,
                 on_upload=lambda e: _handle_upload(e, "consumption.csv", cons_label),
-            ).props("accept=.csv flat dense").classes("max-w-[180px]")
+            ).props(f"accept={_ACCEPT} flat dense").classes("max-w-[180px]")
 
 
 def make_transmission_costs(b1, b2, b3, b4, b5):

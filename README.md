@@ -46,7 +46,7 @@ uv run power_flow_simulator.py --batch-mode \
 
 ## Input Data
 
-Requires two CSV files:
+Requires two input files. Each may be **CSV, XLSX/XLSM or legacy XLS** (Excel files are read from the first sheet). Pass them to the CLI with `--production-file` / `--consumption-file`, or upload them in the GUI.
 
 **production.csv** - Solar generation data
 ```csv
@@ -62,6 +62,14 @@ Time,Energy (kWh),Power (kW),Transmission fee block,
 1. 1. 2024 00:15:00,0.45,1.8,4,
 1. 1. 2024 00:30:00,0.52,2.1,4,
 ```
+
+The consumption file can also be the **smart-meter 15-minute export** from the distribution portal, as downloaded (CSV or XLSX). It is detected by its header; `Časovna značka`, `Energija A+` (kWh), `P+ Prejeta delovna moč` (kW, optional) and `Blok` are used and other columns are ignored:
+```csv
+Merilno mesto,GSRN MM,Časovna značka,Leto,Mesec,Energija A+,Energija A-,...,P+ Prejeta delovna moč,...,Blok,...
+7-000000,000000000000000000,2025-01-01T00:15,2025,1,0.1130,0.0000,...,0.4520,...,4,...
+```
+
+CSV files may be comma-, semicolon- or tab-separated (semicolon files use decimal commas) and UTF-8 or Windows-1250 encoded. Missing values, unparseable timestamps or blocks outside 1–5 stop the run with an error naming the column and row.
 
 ## Output
 

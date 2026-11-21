@@ -18,7 +18,7 @@ uv run power_flow_simulator.py --solar-power 15 --battery-capacity 20
 # Run the simulator CLI (batch mode)
 uv run power_flow_simulator.py --batch-mode --solar-range 10,15,20 --battery-range 0,10,20 --inverter-range 8,10,15
 
-# Run with Docker Compose (place CSV files in data/)
+# Run with Docker Compose (place CSV/Excel input files in data/)
 docker compose up --build
 
 # Run all tests
@@ -62,7 +62,7 @@ uv sync --extra test
 ### Two Main Classes
 
 **`PowerFlowSimulator`** — Single scenario simulation engine
-- `load_and_align_data()`: Loads `production.csv` (solar baseline) and `consumption.csv` (usage), parses timestamps, adds time features (hour, weekday, month, holiday, transmission block)
+- `load_and_align_data()`: Loads production (solar baseline) and consumption (usage) files via `data_readers`, parses timestamps, adds time features (hour, weekday, month, holiday, transmission block)
 - `apply_heating_load()`: Optional synthetic heat pump load (Oct–Mar) with monthly weighting factors
 - `scale_solar_generation()`: Scales from 640.6 kW baseline to target capacity, applies inverter clipping
 - `simulate_power_flows()`: Core 15-minute loop — manages battery charge/discharge, grid import/export, optional power smoothing (peak shaving)
@@ -77,7 +77,7 @@ uv sync --extra test
 
 ### Simulation Data Flow
 
-1. Load CSVs → aligned DataFrame (35,040 rows/year = 4 intervals/hr × 24hr × 365 days)
+1. Load input files (CSV/Excel, via `data_readers`) → aligned DataFrame (35,040 rows/year = 4 intervals/hr × 24hr × 365 days)
 2. Optional: add heating load to consumption
 3. Scale solar from baseline, apply inverter clipping
 4. Per-interval loop: net demand → battery charge/discharge → grid import/export → SOC tracking
@@ -93,32 +93,35 @@ Each 15-min interval: surplus solar charges battery (respecting C-rate and effic
 
 ## Input Data
 
-Two CSV files required (looked up in uploaded files first, then `data/` subdir, then working directory):
-- `production.csv`: Solar generation baseline (timestamp_id, solar_power_kw)
-- `consumption.csv`: Electricity usage (Time, Energy kWh, Power kW, Transmission fee block)
+Two input files required, each CSV, XLSX/XLSM (openpyxl) or XLS (xlrd). Parsing lives in **`data_readers.py`** (`read_table`, `load_production`, `load_consumption`); `load_and_align_data()` only calls it.
+- `production`: Solar generation baseline, read positionally (interval id, solar_power_kw)
+- `consumption`: either the legacy layout (Time `D. M. YYYY HH:MM:SS`, Energy kWh, Power kW, Transmission fee block — positional) or the Slovenian smart-meter export (`Časovna značka`, `Energija A+`, `P+ Prejeta delovna moč`, `Blok`) — detected from the header via `detect_consumption_format()`
+
+GUI lookup (`_find_data_file`): uploaded files → `data/` → working directory, matching the stem with any supported extension (exact name first). Uploads keep their own extension and replace earlier uploads of the same input in other formats. CLI: `--production-file`, `--consumption-file`.
 
 Both files exist in the repository root and are auto-detected by the GUI.
 
 ## Docker Deployment
 
-`docker compose up --build` builds and runs the GUI on port 8080. Place `production.csv` and `consumption.csv` in a `data/` directory — it is volume-mounted into the container at `/app/data`. The `Dockerfile` uses uv and copies only `pyproject.toml`, `uv.lock`, `power_flow_simulator.py`, and `gui.py`.
+`docker compose up --build` builds and runs the GUI on port 8080. Place the production and consumption files (CSV or Excel) in a `data/` directory — it is volume-mounted into the container at `/app/data`. The `Dockerfile` uses uv and copies only `pyproject.toml`, `uv.lock`, `data_readers.py`, `power_flow_simulator.py`, and `gui.py` — add any new top-level module there.
 
 ## Code Quality
 
 - **Formatter/linter**: Ruff (line-length 100, target py313). `gui.py` has per-file-ignores for B018/SIM117 (NiceGUI widget context managers)
 - **Type checker**: mypy (with pandas-stubs, types-seaborn)
 - **Pre-commit hooks**: trailing whitespace, ruff lint+format, mypy
-- **CI**: GitHub Actions runs `uv run pytest --tb=short -v` on push/PR to main
+- **CI** (`.github/workflows/tests.yml`, push/PR to main): lint job (ruff check + format, mypy on `data_readers.py`); test job on Python 3.12/3.13 (pytest with coverage → Codecov, then a CLI smoke run on the `.xls` fixtures); docker job (build, then read the `.xls` fixtures inside the image)
 - Python ≥3.12 required; pyproject.toml targets py313
 
 ## Test Structure
 
-56 tests in `tests/` using pytest with fixtures in `conftest.py`:
+Tests in `tests/` using pytest with fixtures in `conftest.py`:
 - `test_simulation.py`: Energy conservation, battery bounds, solar surplus, grid constraints
 - `test_costs.py`: Baseline costs, time-of-use pricing
 - `test_heating_load.py`: Energy distribution, monthly weighting, edge cases
 - `test_integration.py`: Full pipeline, determinism, edge cases (zero solar/consumption), MultiScenarioAnalyzer
-- `test_gui.py`: GUI unit tests + NiceGUI `User` fixture tests (page structure, tabs, inputs)
+- `test_gui.py`: GUI unit tests (incl. file lookup/upload) + NiceGUI `User` fixture tests (page structure, tabs, inputs)
+- `test_data_readers.py`: CSV/XLSX/XLS reading, layout detection, delimiters/encodings, validation errors, simulator parity across formats. CSV/XLSX inputs are generated in `tmp_path`; `tests/fixtures/*.xls` are committed synthetic files (fake meter IDs) because pandas can't write XLS — regenerate with LibreOffice `soffice --headless --convert-to 'xls:MS Excel 97'`
 
 GUI tests use `nicegui.testing.user_plugin` (headless, no browser needed). Config in `pyproject.toml`: `asyncio_mode = "auto"`, `main_file = "gui.py"`.
 

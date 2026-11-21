@@ -31,6 +31,11 @@ jobs:
       - name: Check Ruff formatting
         run: uvx ruff@0.13.3 format --check .
 
+      - name: Type-check input readers
+        run: >
+          uvx --with pandas-stubs --with types-seaborn mypy==1.18.2
+          --ignore-missing-imports --no-strict-optional data_readers.py
+
   test:
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -65,6 +70,17 @@ jobs:
           --cov-report=xml:coverage.xml
         env:
           UV_PYTHON: ${{ matrix.python-version }}
+
+      - name: CLI smoke test with XLS inputs
+        run: >
+          uv run --frozen python power_flow_simulator.py
+          --production-file tests/fixtures/production.xls
+          --consumption-file tests/fixtures/smart_meter.xls
+          --solar-power 5 --inverter-power 5 --battery-capacity 5
+        env:
+          UV_PYTHON: ${{ matrix.python-version }}
+          MPLBACKEND: Agg
+
       - name: Upload coverage to Codecov
         uses: codecov/codecov-action@v7
         with:
@@ -88,7 +104,16 @@ jobs:
         with:
           context: .
           push: false
+          load: true
           tags: solar-battery-simulator:ci
+
+      - name: Check image can read CSV and Excel inputs
+        run: >
+          docker run --rm -v "$PWD/tests/fixtures:/fixtures:ro"
+          solar-battery-simulator:ci uv run --no-sync python -c
+          "import gui, data_readers as d;
+          print(d.load_consumption('/fixtures/smart_meter.xls').shape,
+          d.load_production('/fixtures/production.xls').shape)"
 
       - name: Validate compose config
         run: docker compose config --quiet

@@ -1,14 +1,17 @@
 """Tests for the NiceGUI frontend."""
 
+import io
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
 import pytest
 
+import gui
 from gui import (
     DEFAULTS,
     _find_data_file,
+    _handle_upload,
     make_monthly_power_fees,
     make_transmission_costs,
 )
@@ -62,6 +65,65 @@ class TestFindDataFile:
         monkeypatch.chdir(tmp_path)
         result = _find_data_file("nonexistent.csv")
         assert result == str(Path("data") / "nonexistent.csv")
+
+    @pytest.mark.parametrize("ext", [".xlsx", ".xlsm", ".xls"])
+    def test_finds_excel_variant_of_same_stem(self, tmp_path, monkeypatch, ext):
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "data").mkdir()
+        (tmp_path / "data" / f"consumption{ext}").write_bytes(b"x")
+        assert _find_data_file("consumption.csv") == str(Path("data") / f"consumption{ext}")
+
+    def test_exact_name_preferred_over_other_extension(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "consumption.xlsx").write_bytes(b"x")
+        (tmp_path / "consumption.csv").write_text("x")
+        assert _find_data_file("consumption.csv") == "consumption.csv"
+
+    def test_upload_dir_beats_data_dir(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        upload_dir = tmp_path / "uploads"
+        upload_dir.mkdir()
+        monkeypatch.setattr(gui, "_upload_dir", upload_dir)
+        (tmp_path / "data").mkdir()
+        (tmp_path / "data" / "consumption.csv").write_text("x")
+        (upload_dir / "consumption.xlsx").write_bytes(b"x")
+        assert _find_data_file("consumption.csv") == str(upload_dir / "consumption.xlsx")
+
+
+class _FakeUpload:
+    def __init__(self, name: str, content: bytes):
+        self.name = name
+        self.content = io.BytesIO(content)
+
+
+class _FakeLabel:
+    text = ""
+
+
+class TestHandleUpload:
+    @pytest.fixture
+    def upload_dir(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(gui, "_upload_dir", tmp_path)
+        return tmp_path
+
+    def test_keeps_uploaded_extension(self, upload_dir):
+        label = _FakeLabel()
+        _handle_upload(_FakeUpload("Moj-Elektro.XLSX", b"data"), "consumption.csv", label)
+        assert (upload_dir / "consumption.xlsx").read_bytes() == b"data"
+        assert not (upload_dir / "consumption.csv").exists()
+        assert "Moj-Elektro.XLSX" in label.text
+
+    def test_new_upload_replaces_other_format(self, upload_dir):
+        (upload_dir / "consumption.csv").write_text("old")
+        _handle_upload(_FakeUpload("new.xls", b"new"), "consumption.csv", _FakeLabel())
+        assert not (upload_dir / "consumption.csv").exists()
+        assert (upload_dir / "consumption.xls").read_bytes() == b"new"
+
+    def test_rejects_unsupported_type(self, upload_dir):
+        label = _FakeLabel()
+        _handle_upload(_FakeUpload("data.pdf", b"x"), "consumption.csv", label)
+        assert list(upload_dir.iterdir()) == []
+        assert "unsupported" in label.text
 
 
 class TestDefaults:

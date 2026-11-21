@@ -69,6 +69,8 @@ from joblib import Memory
 from scipy.optimize import differential_evolution
 from tqdm import tqdm
 
+from data_readers import SUPPORTED_EXTENSIONS, load_consumption, load_production
+
 warnings.filterwarnings("ignore")
 
 # Initialize joblib memory cache
@@ -326,9 +328,9 @@ class PowerFlowSimulator:
             - Prints data loading summary and statistics
 
         Raises:
-            FileNotFoundError: If either CSV file is not found
-            pd.errors.ParserError: If CSV files have incorrect format
-            ValueError: If datetime parsing fails
+            FileNotFoundError: If either input file is not found
+            ValueError: If a file type is unsupported, the layout is unrecognised,
+                or timestamps/values/blocks fail to parse (see data_readers)
 
         Notes:
             - Data is expected to be in 15-minute intervals
@@ -338,23 +340,9 @@ class PowerFlowSimulator:
         """
         print("\nLoading and aligning data...")
 
-        # Load production data
-        production_df = pd.read_csv(self.production_file)
-        production_df.columns = ["timestamp_id", "solar_power_kw"]
-
-        # Load consumption data
-        consumption_df = pd.read_csv(self.consumption_file)
-        consumption_df.columns = ["datetime", "energy_wh", "power_w", "transmission_block", "extra"]
-        consumption_df = consumption_df.drop("extra", axis=1)  # Remove empty column
-
-        # Convert consumption datetime
-        consumption_df["datetime"] = pd.to_datetime(
-            consumption_df["datetime"], format="%d. %m. %Y %H:%M:%S"
-        )
-
-        # Data is already in kWh and kW units - use directly
-        consumption_df["consumption_kwh"] = consumption_df["energy_wh"]
-        consumption_df["consumption_kw"] = consumption_df["power_w"]
+        # Load inputs (CSV / XLSX / XLS; consumption in legacy or smart-meter layout)
+        production_df = load_production(self.production_file)
+        consumption_df = load_consumption(self.consumption_file)
 
         # Files ship with different lengths (leap-year consumption vs non-leap
         # production). Align positionally on the head; warn so the dropped tail
@@ -3333,6 +3321,18 @@ def main():
         help="Daily heating end hour, 0=midnight (default: 0)",
     )
 
+    parser.add_argument(
+        "--production-file",
+        default="production.csv",
+        help="Solar production baseline file: "
+        f"{', '.join(SUPPORTED_EXTENSIONS)} (default: production.csv)",
+    )
+    parser.add_argument(
+        "--consumption-file",
+        default="consumption.csv",
+        help="Consumption file, legacy layout or smart-meter export: "
+        f"{', '.join(SUPPORTED_EXTENSIONS)} (default: consumption.csv)",
+    )
     args = parser.parse_args()
 
     def parse_range(range_str):
@@ -3434,6 +3434,8 @@ def main():
             if args.add_heating_load
             else None,
             time_resolution=args.time_resolution,
+            production_file=args.production_file,
+            consumption_file=args.consumption_file,
         )
 
         # Check if optimization is requested
@@ -3542,6 +3544,8 @@ def main():
             if args.add_heating_load
             else None,
             time_resolution=args.time_resolution,
+            production_file=args.production_file,
+            consumption_file=args.consumption_file,
         )
 
         # Run simulation
