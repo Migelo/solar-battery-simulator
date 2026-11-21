@@ -1,7 +1,0 @@
-System Configuration,Annual Totals (kWh),Battery Statistics
-15.0 kW solar panels,Solar generation: 19958.2,Average SOC: 0.0%
-8.0 kW inverter,Consumption: 1250911.6,Minimum SOC: 0.0%
-20.0 kWh battery,Grid import: 1230953.4,Maximum SOC: 0.0%
-10.0 kW charge power,Grid export: 0.0,Annual cycles: 0.0
-10.0 kW discharge power,Battery charge: 0.0,
-90% battery efficiency,Battery discharge: 0.0,
