@@ -145,14 +145,13 @@ def _price_file(tmp_path, values):
     return path
 
 
-def _run(prod, cons, resolution="15min", export_price_file=None, export_price=0.0, fee=0.0):
+def _run(prod, cons, export_price_file=None, export_price=0.0, fee=0.0):
     sim = PowerFlowSimulator(
         solar_panel_power_kw=20.0,
         inverter_power_kw=20.0,
         battery_capacity_kwh=5.0,
         production_file=str(prod),
         consumption_file=str(cons),
-        time_resolution=resolution,
         export_price_file=str(export_price_file) if export_price_file else None,
         export_fee_eur_mwh=fee,
     )
@@ -222,15 +221,13 @@ def test_constant_market_price_matches_fixed(
     assert market["solar_battery_cost"] == pytest.approx(fixed["solar_battery_cost"])
 
 
-@pytest.mark.parametrize("resolution", ["15min", "1h"])
 def test_market_revenue_is_interval_weighted(
-    tmp_path, sunny_production_csv, minimal_consumption_csv, resolution
+    tmp_path, sunny_production_csv, minimal_consumption_csv
 ):
     values = np.linspace(-20.0, 200.0, 96)  # includes negative prices
     sim, costs = _run(
         sunny_production_csv,
         minimal_consumption_csv,
-        resolution=resolution,
         export_price_file=_price_file(tmp_path, values),
     )
     expected = (
