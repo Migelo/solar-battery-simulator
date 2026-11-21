@@ -105,14 +105,11 @@ async def _handle_upload(event, target_name: str, label_widget) -> bool:
     return True
 
 
-def _data_files_section(inputs, shared):
+def _data_files_section(inputs):
     """Create file upload section — collapsed when files are already found.
 
     Also holds the reference capacity of the production file (registered in ``inputs``),
-    since it describes that file rather than the simulated system. The production file is
-    shared by both tabs, so the reference value is bound to the page-level ``shared`` dict
-    and every tab's input shows (and runs with) the same number. Likewise an upload in
-    one tab refreshes the file status of every tab (``shared["file_status"]``).
+    since it describes that file rather than the simulated system.
     """
 
     def found(name: str) -> str | None:
@@ -138,8 +135,7 @@ def _data_files_section(inputs, shared):
 
     async def on_upload(event, target_name: str, label_widget) -> None:
         if await _handle_upload(event, target_name, label_widget):
-            for update in shared["file_status"]:
-                update()
+            refresh()
 
     both_found = bool(found("production.csv") and found("consumption.csv"))
     with ui.expansion("Data Files", icon="folder_open", value=not both_found).classes("w-full"):
@@ -154,9 +150,9 @@ def _data_files_section(inputs, shared):
             ).props(f"accept={_ACCEPT} flat dense").classes("max-w-[180px]")
             _number(
                 "Reference power", "reference_solar_kw", inputs, step=0.1, min=0.1, suffix="kWp"
-            ).classes("w-36").bind_value(shared, "reference_solar_kw").tooltip(
-                "Installed capacity of the plant that recorded the production file "
-                "(shared by both tabs); generation is scaled from it to the simulated solar size"
+            ).classes("w-36").tooltip(
+                "Installed capacity of the plant that recorded the production file; "
+                "generation is scaled from it to the simulated solar size"
             )
 
         with ui.row().classes("w-full q-gutter-sm items-center"):
@@ -167,7 +163,6 @@ def _data_files_section(inputs, shared):
                 on_upload=lambda e: on_upload(e, "consumption.csv", cons_label),
             ).props(f"accept={_ACCEPT} flat dense").classes("max-w-[180px]")
 
-    shared.setdefault("file_status", []).append(refresh)
     refresh()
 
 
@@ -1098,13 +1093,119 @@ def _heating_section(inputs):
             _number("End hour (0=midnight)", "heating_end_hour", inputs, step=1)
 
 
+SINGLE_TAB = "Single Scenario"
+BATCH_TAB = "Batch Analysis"
+
+
+def _tab_name(value) -> str | None:
+    """Name of the selected tab (``ui.tabs.value`` may be a tab element or its name)."""
+    return value.props["name"] if isinstance(value, ui.tab | ui.tab_panel) else value
+
+
+def _only_on(element, tabs, name: str):
+    """Show ``element`` only while the tab called ``name`` is selected."""
+    return element.bind_visibility_from(tabs, "value", backward=lambda v: _tab_name(v) == name)
+
+
+def _system_specs_section(inputs):
+    with (
+        ui.expansion("System Specs", icon="solar_power", value=True)
+        .classes("w-full")
+        .props("dense") as section
+    ):
+        with ui.grid(columns=1).classes("w-full gap-1"):
+            _number("Solar", "solar_power", inputs, step=0.5, suffix="kW")
+            _number("Inverter", "inverter_power", inputs, step=0.5, suffix="kW")
+            _number("Battery", "battery_capacity", inputs, step=1, suffix="kWh")
+            _number("C-rate", "battery_c_rate", inputs, step=0.1)
+            _number("Efficiency", "battery_efficiency", inputs, step=0.05)
+    return section
+
+
+def _parameter_ranges_section(inputs):
+    with (
+        ui.expansion("Parameter Ranges", icon="grid_view", value=True)
+        .classes("w-full")
+        .props("dense") as section
+    ):
+        inputs["solar_range"] = ui.input(
+            label="Solar range (kW)", value=DEFAULTS["solar_range"]
+        ).classes("w-full")
+        inputs["inverter_range"] = ui.input(
+            label="Inverter range (kW)", value=DEFAULTS["inverter_range"]
+        ).classes("w-full")
+        inputs["battery_range"] = ui.input(
+            label="Battery range (kWh)", value=DEFAULTS["battery_range"]
+        ).classes("w-full")
+    return section
+
+
+def _battery_section(inputs):
+    """Batch copy of the System Specs battery inputs, two-way bound so both show one value."""
+    with (
+        ui.expansion("Battery", icon="battery_charging_full")
+        .classes("w-full")
+        .props("dense") as section
+    ):
+        with ui.grid(columns=2).classes("w-full gap-1"):
+            for label, key, step in (
+                ("C-rate", "battery_c_rate", 0.1),
+                ("Efficiency", "battery_efficiency", 0.05),
+            ):
+                ui.number(label=label, value=DEFAULTS[key], step=step).bind_value(
+                    inputs[key], "value"
+                )
+    return section
+
+
+def _equipment_costs_section(inputs):
+    with (
+        ui.expansion("Equipment Costs", icon="euro", value=True)
+        .classes("w-full")
+        .props("dense") as section
+    ):
+        with ui.grid(columns=1).classes("w-full gap-1"):
+            _number("Solar", "solar_cost_per_kw", inputs, step=10, suffix="\u20ac/kW")
+            _number("Inverter", "inverter_cost_per_kw", inputs, step=10, suffix="\u20ac/kW")
+            _number("Battery", "battery_cost_per_kwh", inputs, step=10, suffix="\u20ac/kWh")
+            _number("Solar maint.", "maintenance_fee_per_kw", inputs, step=1, suffix="\u20ac/kW/yr")
+            _number(
+                "Batt. maint.",
+                "battery_maintenance_fee_per_kwh",
+                inputs,
+                step=1,
+                suffix="\u20ac/kWh/yr",
+            )
+    return section
+
+
+def _financial_section(inputs):
+    with (
+        ui.expansion("Financial", icon="account_balance")
+        .classes("w-full")
+        .props("dense") as section
+    ):
+        use_loan = ui.switch("Use loan", value=DEFAULTS["use_loan"])
+        use_loan.tooltip("Off: the investment is paid in cash upfront")
+        inputs["use_loan"] = use_loan
+        with ui.grid(columns=3).classes("w-full gap-1"):
+            _number("Discount", "discount_rate", inputs, step=0.01)
+            loan_rate = _number("Loan rate", "loan_rate", inputs, step=0.01)
+            loan_years = _number("Loan yrs", "loan_years", inputs, step=1, min=1)
+            loan_rate.bind_enabled_from(use_loan, "value")
+            loan_years.bind_enabled_from(use_loan, "value")
+    return section
+
+
 # ---------------------------------------------------------------------------
 # Page layout
 # ---------------------------------------------------------------------------
 @ui.page("/")
 def index():
-    # Per-client values shared by both tabs (inputs describing the shared data files)
-    shared = {"reference_solar_kw": DEFAULTS["reference_solar_kw"]}
+    # One sidebar for both tabs: every input exists once, so the tabs always share their
+    # values. Each tab shows the sections it had before: System Specs is single-only;
+    # Parameter Ranges, Battery, Equipment Costs and Financial are batch-only.
+    inputs: dict = {}
     app.storage.user.setdefault("dark_mode", True)
     ui.dark_mode().bind_value(app.storage.user, "dark_mode")
     # Sidebar sections: outlined boxes with bold titles; hide the uploader's empty file list
@@ -1131,25 +1232,19 @@ def index():
 
     with ui.element("div").classes("w-full relative"):
         with ui.tabs().classes("w-full") as tabs:
-            batch_tab = ui.tab("Batch Analysis")
-            single_tab = ui.tab("Single Scenario")
-
-        def _on_tab(tab):
-            """Visibility filter: True while ``tab`` is the selected tab."""
-            name = tab.props["name"]
-            return lambda v: (v.props["name"] if isinstance(v, ui.tab) else v) == name
+            batch_tab = ui.tab(BATCH_TAB)
+            single_tab = ui.tab(SINGLE_TAB)
 
         # Run button of the selected tab, right-aligned in the tab bar
         with ui.row().classes("absolute-right items-center q-pr-md"):
-            ui.button(
+            run_single = ui.button(
                 "Run Simulation",
                 icon="play_arrow",
                 on_click=lambda: run_single_simulation(
-                    build_shared_params(single_inputs), single_results, single_spinner
+                    build_shared_params(inputs), single_results, single_spinner
                 ),
-            ).props("color=primary no-wrap").bind_visibility_from(
-                tabs, "value", backward=_on_tab(single_tab)
-            )
+            ).props("color=primary no-wrap")
+            _only_on(run_single, tabs, SINGLE_TAB)
             batch_stop = threading.Event()
             batch_running = False
 
@@ -1167,7 +1262,7 @@ def index():
                 batch_button.props("icon=stop color=negative")
                 try:
                     await run_batch_analysis(
-                        build_shared_params(batch_inputs),
+                        build_shared_params(inputs),
                         batch_results,
                         batch_spinner,
                         stop_event=batch_stop,
@@ -1179,187 +1274,38 @@ def index():
                     batch_button.enable()
 
             batch_button = ui.button("Run Analysis", icon="play_arrow", on_click=_toggle_batch)
-            batch_button.props("color=primary no-wrap").bind_visibility_from(
-                tabs, "value", backward=_on_tab(batch_tab)
-            )
+            _only_on(batch_button.props("color=primary no-wrap"), tabs, BATCH_TAB)
 
     with (
-        ui.tab_panels(tabs, value=batch_tab)
-        .classes("w-full")
-        .style("min-height: calc(100vh - 130px)")
+        ui.splitter(value=25).classes("w-full").style("min-height: calc(100vh - 160px)") as splitter
     ):
-        # ==================================================================
-        # SINGLE SCENARIO TAB
-        # ==================================================================
-        with ui.tab_panel(single_tab):
-            single_inputs = {}
+        with splitter.before:
+            with ui.scroll_area().classes("w-full").style("height: calc(100vh - 170px)"):
+                with ui.column().classes("q-gutter-xs p-2 w-full"):
+                    ui.label("Configuration").classes("text-h6")
+                    _data_files_section(inputs)
+                    _only_on(_system_specs_section(inputs), tabs, SINGLE_TAB)
+                    _only_on(_parameter_ranges_section(inputs), tabs, BATCH_TAB)
+                    _only_on(_battery_section(inputs), tabs, BATCH_TAB)
+                    _only_on(_equipment_costs_section(inputs), tabs, BATCH_TAB)
+                    _only_on(_financial_section(inputs), tabs, BATCH_TAB)
+                    _pricing_section(inputs)
+                    _transmission_section(inputs)
+                    _smoothing_section(inputs)
+                    _heating_section(inputs)
 
-            with (
-                ui.splitter(value=25)
-                .classes("w-full")
-                .style("min-height: calc(100vh - 160px)") as splitter
-            ):
-                with splitter.before:
-                    with ui.scroll_area().classes("w-full").style("height: calc(100vh - 170px)"):
-                        with ui.column().classes("q-gutter-xs p-2 w-full"):
-                            ui.label("Configuration").classes("text-h6")
-
-                            _data_files_section(single_inputs, shared)
-
-                            with (
-                                ui.expansion("System Specs", icon="solar_power", value=True)
-                                .classes("w-full")
-                                .props("dense")
-                            ):
-                                with ui.grid(columns=1).classes("w-full gap-1"):
-                                    _number(
-                                        "Solar", "solar_power", single_inputs, step=0.5, suffix="kW"
-                                    )
-                                    _number(
-                                        "Inverter",
-                                        "inverter_power",
-                                        single_inputs,
-                                        step=0.5,
-                                        suffix="kW",
-                                    )
-                                    _number(
-                                        "Battery",
-                                        "battery_capacity",
-                                        single_inputs,
-                                        step=1,
-                                        suffix="kWh",
-                                    )
-                                    _number("C-rate", "battery_c_rate", single_inputs, step=0.1)
-                                    _number(
-                                        "Efficiency", "battery_efficiency", single_inputs, step=0.05
-                                    )
-
-                            _pricing_section(single_inputs)
-                            _transmission_section(single_inputs)
-                            _smoothing_section(single_inputs)
-                            _heating_section(single_inputs)
-
-                with splitter.after:
-                    with ui.scroll_area().classes("w-full").style("height: calc(100vh - 170px)"):
-                        single_spinner = ui.spinner("dots", size="xl")
-                        single_spinner.visible = False
-                        single_results = ui.column().classes("w-full")
-
-        # ==================================================================
-        # BATCH ANALYSIS TAB
-        # ==================================================================
-        with ui.tab_panel(batch_tab):
-            batch_inputs = {}
-
-            with (
-                ui.splitter(value=25)
-                .classes("w-full")
-                .style("min-height: calc(100vh - 160px)") as splitter
-            ):
-                with splitter.before:
-                    with ui.scroll_area().classes("w-full").style("height: calc(100vh - 170px)"):
-                        with ui.column().classes("q-gutter-xs p-2 w-full"):
-                            ui.label("Configuration").classes("text-h6")
-
-                            _data_files_section(batch_inputs, shared)
-
-                            with (
-                                ui.expansion("Parameter Ranges", icon="grid_view", value=True)
-                                .classes("w-full")
-                                .props("dense")
-                            ):
-                                batch_inputs["solar_range"] = ui.input(
-                                    label="Solar range (kW)", value=DEFAULTS["solar_range"]
-                                ).classes("w-full")
-                                batch_inputs["inverter_range"] = ui.input(
-                                    label="Inverter range (kW)", value=DEFAULTS["inverter_range"]
-                                ).classes("w-full")
-                                batch_inputs["battery_range"] = ui.input(
-                                    label="Battery range (kWh)", value=DEFAULTS["battery_range"]
-                                ).classes("w-full")
-
-                            with (
-                                ui.expansion("Battery", icon="battery_charging_full")
-                                .classes("w-full")
-                                .props("dense")
-                            ):
-                                with ui.grid(columns=2).classes("w-full gap-1"):
-                                    _number("C-rate", "battery_c_rate", batch_inputs, step=0.1)
-                                    _number(
-                                        "Efficiency", "battery_efficiency", batch_inputs, step=0.05
-                                    )
-
-                            with (
-                                ui.expansion("Equipment Costs", icon="euro", value=True)
-                                .classes("w-full")
-                                .props("dense")
-                            ):
-                                with ui.grid(columns=1).classes("w-full gap-1"):
-                                    _number(
-                                        "Solar",
-                                        "solar_cost_per_kw",
-                                        batch_inputs,
-                                        step=10,
-                                        suffix="\u20ac/kW",
-                                    )
-                                    _number(
-                                        "Inverter",
-                                        "inverter_cost_per_kw",
-                                        batch_inputs,
-                                        step=10,
-                                        suffix="\u20ac/kW",
-                                    )
-                                    _number(
-                                        "Battery",
-                                        "battery_cost_per_kwh",
-                                        batch_inputs,
-                                        step=10,
-                                        suffix="\u20ac/kWh",
-                                    )
-                                    _number(
-                                        "Solar maint.",
-                                        "maintenance_fee_per_kw",
-                                        batch_inputs,
-                                        step=1,
-                                        suffix="\u20ac/kW/yr",
-                                    )
-                                    _number(
-                                        "Batt. maint.",
-                                        "battery_maintenance_fee_per_kwh",
-                                        batch_inputs,
-                                        step=1,
-                                        suffix="\u20ac/kWh/yr",
-                                    )
-
-                            with (
-                                ui.expansion("Financial", icon="account_balance")
-                                .classes("w-full")
-                                .props("dense")
-                            ):
-                                use_loan = ui.switch("Use loan", value=DEFAULTS["use_loan"])
-                                use_loan.tooltip("Off: the investment is paid in cash upfront")
-                                batch_inputs["use_loan"] = use_loan
-                                with ui.grid(columns=3).classes("w-full gap-1"):
-                                    _number("Discount", "discount_rate", batch_inputs, step=0.01)
-                                    loan_rate = _number(
-                                        "Loan rate", "loan_rate", batch_inputs, step=0.01
-                                    )
-                                    loan_years = _number(
-                                        "Loan yrs", "loan_years", batch_inputs, step=1, min=1
-                                    )
-                                    loan_rate.bind_enabled_from(use_loan, "value")
-                                    loan_years.bind_enabled_from(use_loan, "value")
-
-                            _pricing_section(batch_inputs)
-                            _transmission_section(batch_inputs)
-                            _smoothing_section(batch_inputs)
-                            _heating_section(batch_inputs)
-
-                with splitter.after:
+        with splitter.after:
+            with ui.tab_panels(tabs, value=batch_tab).classes("w-full"):
+                with ui.tab_panel(batch_tab):
                     with ui.scroll_area().classes("w-full").style("height: calc(100vh - 170px)"):
                         batch_spinner = ui.spinner("dots", size="xl")
                         batch_spinner.visible = False
                         batch_results = ui.column().classes("w-full")
+                with ui.tab_panel(single_tab):
+                    with ui.scroll_area().classes("w-full").style("height: calc(100vh - 170px)"):
+                        single_spinner = ui.spinner("dots", size="xl")
+                        single_spinner.visible = False
+                        single_results = ui.column().classes("w-full")
 
 
 def _pick_port(host: str) -> int:
