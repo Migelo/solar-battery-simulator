@@ -56,6 +56,7 @@ uv sync --extra test
 ## Architecture
 
 **`gui.py`** — NiceGUI web frontend with two tabs (Single Scenario / Batch Analysis). Key design decisions:
+- One sidebar (single `inputs` dict) shared by both tabs, so values stay in sync; the tabs only switch the results panel. Tab-specific parts use `_only_on(element, tabs, name)`: System Specs + "Run Simulation" (single), Parameter Ranges + Battery + Equipment Costs + Financial + "Run Analysis" (batch) — each tab shows exactly the sections it always had. Battery's C-rate/Efficiency are copies two-way bound to the System Specs widgets
 - Runs simulations via `asyncio.to_thread` to keep the UI responsive
 - Matplotlib plots use a scoped dark theme (`_GUI_PLOT_RC` via `plt.rc_context`) — does **not** mutate global rcParams, so CLI plots in `power_flow_simulator.py` are unaffected
 - Plots rendered as inline base64 `<img>` tags (not `ui.image()` which collapses in dynamic tab panels)

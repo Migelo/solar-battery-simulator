@@ -298,5 +298,67 @@ class TestExportPrices:
 
 
 async def test_batch_financial_has_loan_switch(user):
+    from nicegui import ui
+
     await user.open("/")
-    await user.should_see("Use loan")
+    await user.should_see("Use loan")  # Batch is the default tab
+    user.find(kind=ui.tabs).elements.pop().value = gui.SINGLE_TAB
+    await user.should_not_see("Use loan")  # Financial is batch-only
+
+
+class TestSharedSidebar:
+    """Both tabs use one sidebar; only the tab-specific sections switch."""
+
+    @staticmethod
+    def _expansions(user):
+        from nicegui import ui
+
+        return {e.text: e for e in user.client.layout.descendants() if isinstance(e, ui.expansion)}
+
+    async def test_common_inputs_exist_once(self, user):
+        from nicegui import ui
+
+        await user.open("/")
+        labels = [n.props.get("label") for n in user.find(kind=ui.number).elements]
+        for label in ("Peak price", "OVE-SPTE fee", "Heating energy", "Reference power"):
+            assert labels.count(label) == 1
+
+    async def test_tab_specific_sections_switch(self, user):
+        from nicegui import ui
+
+        await user.open("/")
+        sections = self._expansions(user)
+        # Batch is the default tab
+        assert not sections["System Specs"].visible
+        assert sections["Parameter Ranges"].visible
+        assert sections["Battery"].visible
+        assert sections["Financial"].visible and sections["Equipment Costs"].visible
+        assert sections["Electricity Pricing"].visible
+
+        tabs = user.find(kind=ui.tabs).elements.pop()
+        tabs.value = gui.SINGLE_TAB
+        assert sections["System Specs"].visible
+        assert not sections["Parameter Ranges"].visible
+        assert not sections["Battery"].visible
+        assert not sections["Financial"].visible
+        assert not sections["Equipment Costs"].visible
+        assert sections["Electricity Pricing"].visible
+
+    async def test_battery_inputs_bound_to_system_specs(self, user):
+        import asyncio
+
+        from nicegui import ui
+
+        await user.open("/")
+        rates = [
+            n
+            for n in user.client.layout.descendants()
+            if isinstance(n, ui.number) and n.props.get("label") == "C-rate"
+        ]
+        assert len(rates) == 2
+        rates[1].value = 0.7
+        for _ in range(20):
+            if rates[0].value == 0.7:
+                break
+            await asyncio.sleep(0.05)
+        assert rates[0].value == 0.7
