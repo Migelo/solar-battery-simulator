@@ -59,6 +59,7 @@ import hashlib
 import os
 import warnings
 from collections.abc import Callable
+from dataclasses import dataclass
 from itertools import product
 from typing import Any
 
@@ -90,6 +91,86 @@ DEFAULT_REFERENCE_SOLAR_KW = 640.6
 
 # Initialize joblib memory cache
 memory = Memory(location=".cache", verbose=0)
+
+# What the battery-subsidy capacity ratio (kWh battery per kW) is measured against
+BATTERY_SUBSIDY_BASES = ("solar", "inverter", "sum")
+
+
+@dataclass
+class SubsidyConfig:
+    """One-off investment subsidies, deducted from the initial investment.
+
+    Each part is active when its switch is on and its rate > 0:
+    - ``solar_eur_per_kw``: EUR per installed kW of solar panels
+    - ``inverter_eur_per_kw``: EUR per installed kW of inverter
+    - ``battery_eur_per_kwh``: EUR per installed kWh of battery, only when
+      ``battery_min_ratio <= battery_kwh / basis_kw <= battery_max_ratio``; ``battery_basis``
+      is ``"solar"``, ``"inverter"`` or ``"sum"`` (solar + inverter kW)
+    - ``cap_fraction``: total subsidy capped at this fraction of the gross investment
+    """
+
+    solar_enabled: bool = False
+    solar_eur_per_kw: float = 0.0
+    inverter_enabled: bool = False
+    inverter_eur_per_kw: float = 0.0
+    battery_enabled: bool = False
+    battery_eur_per_kwh: float = 0.0
+    battery_min_ratio: float = 0.5
+    battery_max_ratio: float = 2.5
+    battery_basis: str = "solar"
+    cap_enabled: bool = False
+    cap_fraction: float = 1.0
+
+    def __post_init__(self):
+        if self.battery_basis not in BATTERY_SUBSIDY_BASES:
+            raise ValueError(
+                f"battery_basis must be one of {BATTERY_SUBSIDY_BASES}, got {self.battery_basis!r}"
+            )
+
+    @property
+    def active(self) -> bool:
+        return (
+            (self.solar_enabled and self.solar_eur_per_kw > 0)
+            or (self.inverter_enabled and self.inverter_eur_per_kw > 0)
+            or (self.battery_enabled and self.battery_eur_per_kwh > 0)
+        )
+
+    def battery_eligible(self, solar_kw: float, inverter_kw: float, battery_kwh: float) -> bool:
+        """Whether the battery/power ratio lies inside [battery_min_ratio, battery_max_ratio]."""
+        basis_kw = {
+            "solar": solar_kw,
+            "inverter": inverter_kw,
+            "sum": solar_kw + inverter_kw,
+        }[self.battery_basis]
+        if battery_kwh <= 0 or basis_kw <= 0:
+            return False
+        ratio = battery_kwh / basis_kw
+        # Small tolerance so e.g. 10 kWh / 4 kW = 2.5 is not lost to float rounding
+        return self.battery_min_ratio - 1e-9 <= ratio <= self.battery_max_ratio + 1e-9
+
+    def calculate(
+        self, solar_kw: float, inverter_kw: float, battery_kwh: float, gross_investment: float
+    ) -> dict[str, float]:
+        """Subsidy breakdown (EUR) for one system; ``subsidy`` is the capped total."""
+        solar = solar_kw * self.solar_eur_per_kw if self.solar_enabled else 0.0
+        inverter = inverter_kw * self.inverter_eur_per_kw if self.inverter_enabled else 0.0
+        battery = (
+            battery_kwh * self.battery_eur_per_kwh
+            if self.battery_enabled and self.battery_eligible(solar_kw, inverter_kw, battery_kwh)
+            else 0.0
+        )
+        solar, inverter, battery = (max(v, 0.0) for v in (solar, inverter, battery))
+        total = solar + inverter + battery
+        if self.cap_enabled:
+            total = min(total, max(self.cap_fraction, 0.0) * gross_investment)
+        # Never more than the investment itself
+        total = min(total, max(gross_investment, 0.0))
+        return {
+            "subsidy_solar": solar,
+            "subsidy_inverter": inverter,
+            "subsidy_battery": battery,
+            "subsidy": total,
+        }
 
 
 _fingerprint_memo: dict[tuple[str, int, int], str] = {}
@@ -1695,6 +1776,7 @@ class MultiScenarioAnalyzer:
         export_price_alignment: str = ALIGN_AUTO,
         export_fee_eur_mwh: float = 0.0,
         reference_solar_kw: float = DEFAULT_REFERENCE_SOLAR_KW,
+        subsidy: SubsidyConfig | None = None,
     ):
         """
         Multi-scenario analyzer for solar + battery systems
@@ -1725,6 +1807,7 @@ class MultiScenarioAnalyzer:
             export_price_alignment (str): "auto" or "calendar", see PowerFlowSimulator
             export_fee_eur_mwh (float): Fee deducted per exported MWh (EUR/MWh)
             reference_solar_kw (float): Installed capacity (kWp) behind the production file
+            subsidy (SubsidyConfig): One-off subsidies deducted from the initial investment
         """
         self.solar_range = solar_range or [5, 8.5, 10, 15, 20]
         self.inverter_range = inverter_range or [5, 8, 10, 15]
@@ -1746,6 +1829,7 @@ class MultiScenarioAnalyzer:
         self.discount_rate = discount_rate
         self.loan_rate = loan_rate
         self.loan_years = loan_years
+        self.subsidy = subsidy or SubsidyConfig()
         self.production_file = production_file
         self.consumption_file = consumption_file
 
@@ -1931,10 +2015,13 @@ class MultiScenarioAnalyzer:
             simulation_results = cached_result["simulation_results"]
 
             # Calculate equipment costs and ROI
-            solar_investment = scenario["solar_panel_power_kw"] * self.solar_cost_per_kw
-            inverter_investment = scenario["inverter_power_kw"] * self.inverter_cost_per_kw
-            battery_investment = scenario["battery_capacity_kwh"] * self.battery_cost_per_kwh
-            total_investment = solar_investment + inverter_investment + battery_investment
+            investment = self.calculate_investment(
+                scenario["solar_panel_power_kw"],
+                scenario["inverter_power_kw"],
+                scenario["battery_capacity_kwh"],
+            )
+            gross_investment = investment["gross_investment"]
+            total_investment = investment["total_investment"]
 
             annual_savings = cost_analysis["savings_vs_baseline"]
             payback_years = (
@@ -1948,7 +2035,8 @@ class MultiScenarioAnalyzer:
             annual_battery_maintenance = (
                 scenario["battery_capacity_kwh"] * self.battery_maintenance_fee_per_kwh
             )
-            annual_general_one_percent_maintenance = total_investment * 0.01
+            # Maintenance follows the equipment value, not what was paid after subsidies
+            annual_general_one_percent_maintenance = gross_investment * 0.01
             annual_maintenance_cost = (
                 annual_solar_maintenance
                 + annual_battery_maintenance
@@ -1973,8 +2061,7 @@ class MultiScenarioAnalyzer:
             result = {
                 **scenario,
                 **cost_analysis,
-                "battery_investment": battery_investment,
-                "total_investment": total_investment,
+                **investment,
                 "payback_years": payback_years,
                 "annual_solar_maintenance": annual_solar_maintenance,
                 "annual_battery_maintenance": annual_battery_maintenance,
@@ -2033,6 +2120,7 @@ class MultiScenarioAnalyzer:
                 "Battery (kWh)": df["battery_capacity_kwh"],
                 "Annual Savings (€)": df["savings_vs_baseline"].round(2),
                 "Investment (€)": df["total_investment"].round(0),
+                "Subsidy (€)": df["subsidy"].round(0),
                 "Payback (years)": df["payback_years"].round(1),
                 "Self-Sufficiency (%)": df["self_sufficiency_percent"].round(1),
                 "Solar Generation (kWh)": df["annual_solar_generation"].round(0),
@@ -2679,6 +2767,28 @@ class MultiScenarioAnalyzer:
             df.to_csv("multi_scenario_comprehensive_results.csv", index=False)
             print("Comprehensive results exported to 'multi_scenario_comprehensive_results.csv'")
 
+    def calculate_investment(
+        self, solar_kw: float, inverter_kw: float, battery_kwh: float
+    ) -> dict[str, float]:
+        """Equipment costs, subsidies and the net initial investment (``total_investment``).
+
+        ``total_investment`` = gross equipment cost minus the one-off subsidy; it drives
+        payback, the loan principal and NPV.
+        """
+        solar = solar_kw * self.solar_cost_per_kw
+        inverter = inverter_kw * self.inverter_cost_per_kw
+        battery = battery_kwh * self.battery_cost_per_kwh
+        gross = solar + inverter + battery
+        subsidy = self.subsidy.calculate(solar_kw, inverter_kw, battery_kwh, gross)
+        return {
+            "solar_investment": solar,
+            "inverter_investment": inverter,
+            "battery_investment": battery,
+            "gross_investment": gross,
+            **subsidy,
+            "total_investment": gross - subsidy["subsidy"],
+        }
+
     def calculate_loan_payment(self, principal: float) -> float:
         """
         Calculate annual loan payment using loan amortization formula.
@@ -2853,16 +2963,15 @@ class MultiScenarioAnalyzer:
                 annual_savings = cost_analysis["savings_vs_baseline"]
 
                 # Calculate investment costs
-                solar_investment = solar_kw * self.solar_cost_per_kw
-                inverter_investment = inverter_kw * self.inverter_cost_per_kw
-                battery_investment = battery_kwh * self.battery_cost_per_kwh
-                total_investment = solar_investment + inverter_investment + battery_investment
+                investment = self.calculate_investment(solar_kw, inverter_kw, battery_kwh)
+                gross_investment = investment["gross_investment"]
+                total_investment = investment["total_investment"]
 
                 # Calculate maintenance costs (same as run_all_scenarios,
                 # including 1% of investment general maintenance)
                 annual_solar_maintenance = solar_kw * self.maintenance_fee_per_kw
                 annual_battery_maintenance = battery_kwh * self.battery_maintenance_fee_per_kwh
-                annual_general_one_percent_maintenance = total_investment * 0.01
+                annual_general_one_percent_maintenance = gross_investment * 0.01
                 annual_maintenance_cost = (
                     annual_solar_maintenance
                     + annual_battery_maintenance
@@ -3210,6 +3319,23 @@ def _cli_network_tariffs(args) -> tuple[dict[str, float], dict[str, float]]:
     return dict(rates["transmission_costs"]), dict(rates["monthly_power_fees"])
 
 
+def _cli_subsidy(args) -> SubsidyConfig:
+    """Subsidy config from CLI flags: a part is enabled when its rate is > 0."""
+    return SubsidyConfig(
+        solar_enabled=args.subsidy_solar_per_kw > 0,
+        solar_eur_per_kw=args.subsidy_solar_per_kw,
+        inverter_enabled=args.subsidy_inverter_per_kw > 0,
+        inverter_eur_per_kw=args.subsidy_inverter_per_kw,
+        battery_enabled=args.subsidy_battery_per_kwh > 0,
+        battery_eur_per_kwh=args.subsidy_battery_per_kwh,
+        battery_min_ratio=args.subsidy_battery_min_ratio,
+        battery_max_ratio=args.subsidy_battery_max_ratio,
+        battery_basis=args.subsidy_battery_basis,
+        cap_enabled=args.subsidy_cap is not None,
+        cap_fraction=args.subsidy_cap if args.subsidy_cap is not None else 1.0,
+    )
+
+
 def main():
     """Main execution function"""
     parser = argparse.ArgumentParser(description="Power Flow Simulator for Solar + Battery Systems")
@@ -3492,6 +3618,52 @@ def main():
         help="Loan term in years; 0 = no loan, paid in cash (default: 10)",
     )
 
+    # One-off investment subsidies (each one is enabled by giving it a rate > 0)
+    parser.add_argument(
+        "--subsidy-solar-per-kw",
+        type=float,
+        default=0.0,
+        help="Subsidy in EUR per installed kW of solar, deducted from the investment (default: 0)",
+    )
+    parser.add_argument(
+        "--subsidy-inverter-per-kw",
+        type=float,
+        default=0.0,
+        help="Subsidy in EUR per installed kW of inverter (default: 0)",
+    )
+    parser.add_argument(
+        "--subsidy-battery-per-kwh",
+        type=float,
+        default=0.0,
+        help="Subsidy in EUR per installed kWh of battery, only if the battery kWh / basis kW "
+        "ratio is within --subsidy-battery-min-ratio..--subsidy-battery-max-ratio (default: 0)",
+    )
+    parser.add_argument(
+        "--subsidy-battery-min-ratio",
+        type=float,
+        default=0.5,
+        help="Minimum battery kWh per basis kW for the battery subsidy (default: 0.5)",
+    )
+    parser.add_argument(
+        "--subsidy-battery-max-ratio",
+        type=float,
+        default=2.5,
+        help="Maximum battery kWh per basis kW for the battery subsidy (default: 2.5)",
+    )
+    parser.add_argument(
+        "--subsidy-battery-basis",
+        choices=BATTERY_SUBSIDY_BASES,
+        default="solar",
+        help="Power the battery ratio is measured against: solar, inverter or sum "
+        "(solar + inverter) kW (default: solar)",
+    )
+    parser.add_argument(
+        "--subsidy-cap",
+        type=float,
+        default=None,
+        help="Cap the total subsidy at this fraction of the investment, e.g. 0.3 (default: none)",
+    )
+
     # Optimization parameters
     parser.add_argument(
         "--optimize-npv",
@@ -3597,6 +3769,15 @@ def main():
         print(
             f"Electricity prices: €{args.peak_price:.3f}/kWh peak, €{args.off_peak_price:.3f}/kWh off-peak"
         )
+        if _cli_subsidy(args).active:
+            print(
+                f"Subsidies: €{args.subsidy_solar_per_kw}/kW solar, "
+                f"€{args.subsidy_inverter_per_kw}/kW inverter, "
+                f"€{args.subsidy_battery_per_kwh}/kWh battery "
+                f"({args.subsidy_battery_min_ratio}-{args.subsidy_battery_max_ratio} kWh per "
+                f"{args.subsidy_battery_basis} kW)"
+                + (f", capped at {args.subsidy_cap:.0%}" if args.subsidy_cap is not None else "")
+            )
         if args.export_price_file:
             print(f"Export price: market prices from {args.export_price_file}")
         else:
@@ -3653,6 +3834,7 @@ def main():
             discount_rate=args.discount_rate,
             loan_rate=args.loan_rate,
             loan_years=args.loan_years,
+            subsidy=_cli_subsidy(args),
             enable_power_smoothing=args.enable_power_smoothing,
             min_soc_reserve=args.min_soc_reserve,
             max_power_by_block=max_power_by_block if max_power_by_block else None,
