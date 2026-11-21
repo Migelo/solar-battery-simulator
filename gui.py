@@ -872,21 +872,40 @@ def comparison_csv_bytes(df: pd.DataFrame) -> bytes:
     return text.encode("utf-8-sig")
 
 
-def comparison_xlsx_bytes(df: pd.DataFrame) -> bytes:
-    """Excel workbook with real numbers in number-formatted cells.
+# Slovenian locale tag (LCID 0x424): LibreOffice renders tagged formats as ``1.234,5`` / ``45,3 %``
+# whatever the viewer's locale; Excel takes separators from the OS, so Slovenian Excel matches.
+XLSX_LOCALE = "[$-424]"
+XLSX_PERCENT_COLUMNS = {"Self-Suff (%)"}
 
-    Values stay numeric (sortable, usable in formulas); Excel draws the decimal separator
-    from the viewer's locale, so a Slovenian Excel shows ``1.234,5``.
+
+def xlsx_number_format(label: str, decimals: int) -> str:
+    """Slovenian-tagged Excel number format: ``.`` thousands, ``,`` decimals, ``45,3 %``."""
+    frac = "." + "0" * decimals if decimals else ""
+    if label in XLSX_PERCENT_COLUMNS:
+        return f"{XLSX_LOCALE}0{frac}\\ %"
+    return f"{XLSX_LOCALE}#,##0{frac}"
+
+
+def comparison_xlsx_bytes(df: pd.DataFrame) -> bytes:
+    """Excel workbook in Slovenian number formatting, with real numbers in the cells.
+
+    Values stay numeric (sortable, usable in formulas); percentages are stored as fractions
+    (0.453) in a ``0,0 %`` cell so they display as ``45,3 %``.
     """
     from openpyxl.utils import get_column_letter
 
+    out = df.copy()
+    for label in XLSX_PERCENT_COLUMNS:
+        out[label] = out[label] / 100.0
+
     buf = io.BytesIO()
     with pd.ExcelWriter(buf, engine="openpyxl") as writer:
-        df.to_excel(writer, index=False, sheet_name="Scenarios")
+        out.to_excel(writer, index=False, sheet_name="Scenarios")
+        writer.book.properties.language = "sl-SI"
         ws = writer.sheets["Scenarios"]
         ws.freeze_panes = "A2"
         for idx, (label, _, decimals) in enumerate(COMPARISON_COLUMNS, start=1):
-            fmt = "#,##0" + ("." + "0" * decimals if decimals else "")
+            fmt = xlsx_number_format(label, decimals)
             letter = get_column_letter(idx)
             for (cell,) in ws.iter_rows(min_row=2, min_col=idx, max_col=idx):
                 cell.number_format = fmt
