@@ -1,11 +1,15 @@
 """Shared test fixtures for power flow simulator tests."""
 
+import os
 import sys
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
 import pytest
+
+# The GUI's background price-cache refresher must not hit the network in tests.
+os.environ["PRICE_CACHE_AUTO_UPDATE"] = "0"
 
 # Add parent directory to path for imports
 sys.path.insert(0, str(Path(__file__).parent.parent))

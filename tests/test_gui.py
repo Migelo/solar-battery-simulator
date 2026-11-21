@@ -229,3 +229,54 @@ class TestPageStructure:
         await user.should_see("Power Smoothing")
         await user.should_see("Heating Load")
         await user.should_see("Time Resolution")
+
+    async def test_pricing_has_export_mode(self, user):
+        await user.open("/")
+        await user.should_see("Export pricing")
+
+
+class TestExportPrices:
+    def test_fixed_is_default(self):
+        assert DEFAULTS["export_price_mode"] == gui.EXPORT_MODE_FIXED
+        assert gui._export_prices({})[0] is None
+
+    def test_fixed_mode_uses_no_file(self):
+        assert gui._export_prices({"export_price_mode": gui.EXPORT_MODE_FIXED})[0] is None
+
+    def test_uploaded_file_wins_with_auto_alignment(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setattr(gui, "_upload_dir", tmp_path / "uploads")
+        (tmp_path / "data").mkdir()
+        (tmp_path / "data" / "export_prices.xlsx").write_bytes(b"x")
+        found, alignment = gui._export_prices({"export_price_mode": gui.EXPORT_MODE_MARKET})
+        assert found == str(Path("data") / "export_prices.xlsx")
+        assert alignment == gui.ALIGN_AUTO
+
+    def test_cache_used_by_default_with_calendar_alignment(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setattr(gui, "_upload_dir", tmp_path / "uploads")
+        cache = tmp_path / "data" / "price_cache"
+        cache.mkdir(parents=True)
+        (cache / "export_prices.csv").write_text("timestamp,price_eur_mwh\n")
+        found, alignment = gui._export_prices({"export_price_mode": gui.EXPORT_MODE_MARKET})
+        assert Path(found) == Path("data") / "price_cache" / "export_prices.csv"
+        assert alignment == gui.ALIGN_CALENDAR
+
+    def test_no_cache_and_offline_raises(self, tmp_path, monkeypatch):
+        import price_cache
+
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setattr(gui, "_upload_dir", tmp_path / "uploads")
+
+        def offline(_url, **_kwargs):
+            raise OSError("network down")
+
+        monkeypatch.setattr(price_cache, "_get_json", offline)
+        with pytest.raises(FileNotFoundError, match="use fixed export pricing"):
+            gui._export_prices({"export_price_mode": gui.EXPORT_MODE_MARKET})
+
+    def test_cache_status_text(self):
+        ok = {"path": "p", "start": "2025-11-23", "end": "2026-11-22", "days": 365, "errors": []}
+        assert "365 days" in gui._price_cache_status_text(ok)
+        down = {"errors": ["download failed"], "fetched": [], "kept": [], "pruned": []}
+        assert "unavailable" in gui._price_cache_status_text(down)

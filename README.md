@@ -71,6 +71,28 @@ Merilno mesto,GSRN MM,Časovna značka,Leto,Mesec,Energija A+,Energija A-,...,P+
 
 CSV files may be comma-, semicolon- or tab-separated (semicolon files use decimal commas) and UTF-8 or Windows-1250 encoded. Missing values, unparseable timestamps or blocks outside 1–5 stop the run with an error naming the column and row.
 
+### Export prices (optional)
+
+Exported energy is paid either a **fixed price** (default, `--export-price` €/kWh) or **market prices** (`--export-pricing market`, or *Export pricing → Market price* in the GUI): the Slovenian day-ahead price of each interval, taken from the rolling cache of the **last 365 days** and matched to the consumption by month/day/time of day — whatever year the consumption data is from.
+
+**Rolling 1-year price cache (default source).** `price_cache.py` keeps the last 365 days of SI day-ahead prices in `data/price_cache/` (one CSV per month plus a combined `export_prices.csv`), downloaded from the free [Energy-Charts API](https://api.energy-charts.info) (Fraunhofer ISE, CC BY 4.0, data: Bundesnetzagentur | SMARD.de) — the same SIPX price HUPX publishes. Finished months are downloaded once and kept, the current month is refreshed (including tomorrow's prices once published), months older than the window are deleted, and a failed download keeps the existing cache.
+- GUI: refreshed at startup and every 6 hours; used when *Export pricing → Market price (SI day-ahead, last 365 days)* is selected. An uploaded price file takes precedence.
+- CLI: `--export-pricing market` updates the cache and uses it; `uv run price_cache.py` only updates it.
+- Docker: the cache lives in the mounted `data/` directory, so it survives restarts.
+
+**Own price file.** `--export-price-file` (overrides `--export-price` and the cache), or upload it in the GUI. Own files are matched by exact timestamp when they cover the consumption dates, otherwise by month/day/time.
+
+Accepted price files (CSV/XLSX/XLS):
+- the **HUPX Labs download** of *Day-Ahead Market → Aggregated trading data* as-is — 60-min MTU (`Delivery day, Hour, Price, …`, until 30 Sep 2025) or 15-min MTU (`Delivery day, Quarter hour, Price, …`, from 1 Oct 2025), price in €/MWh. The repeated DST hour (`9B`–`12B`) is averaged; a `Region` column, if present, is filtered to SI.
+- a generic `timestamp,price` file: timestamp = interval start (local time), 15- or 60-min steps, price in €/MWh unless the header contains `kwh`.
+
+Each interval's export is paid that interval's price (negative prices reduce revenue). If the prices are from another year than the consumption data they are matched by month/day/time of day; up to 1% of intervals (leap day, DST hour) are gap-filled, otherwise the run stops — the file must cover a full year.
+
+`hupx_prices.py` downloads prices from the public HUPX API (without signing in only about the last two months are served):
+```bash
+uv run hupx_prices.py --start 2026-10-01 --end 2026-10-31 --out data/export_prices.csv
+```
+
 ## Output
 
 ### Single Mode
@@ -93,6 +115,9 @@ CSV files may be comma-, semicolon- or tab-separated (semicolon files use decima
 | `--battery-efficiency` | 0.9 | Round-trip efficiency |
 | `--peak-price` | 0.147 | Peak electricity (€/kWh) |
 | `--off-peak-price` | 0.107 | Off-peak electricity (€/kWh) |
+| `--export-price` | 0.01 | Fixed export price (€/kWh) |
+| `--export-price-file` | – | Market export prices (HUPX download or `timestamp,price`) |
+| `--export-pricing` | fixed | `fixed` or `market` (last-365-days SI day-ahead cache) |
 
 See `uv run power_flow_simulator.py --help` for all options.
 

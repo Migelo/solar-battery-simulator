@@ -93,9 +93,12 @@ Each 15-min interval: surplus solar charges battery (respecting C-rate and effic
 
 ## Input Data
 
-Two input files required, each CSV, XLSX/XLSM (openpyxl) or XLS (xlrd). Parsing lives in **`data_readers.py`** (`read_table`, `load_production`, `load_consumption`); `load_and_align_data()` only calls it.
+Two input files required, each CSV, XLSX/XLSM (openpyxl) or XLS (xlrd). Parsing lives in **`data_readers.py`** (`read_table`, `load_production`, `load_consumption`, `load_export_prices`, `align_export_prices`); `load_and_align_data()` only calls it.
 - `production`: Solar generation baseline, read positionally (interval id, solar_power_kw)
 - `consumption`: either the legacy layout (Time `D. M. YYYY HH:MM:SS`, Energy kWh, Power kW, Transmission fee block — positional) or the Slovenian smart-meter export (`Časovna značka`, `Energija A+`, `P+ Prejeta delovna moč`, `Blok`) — detected from the header via `detect_consumption_format()`
+- `export_prices` (optional, `export_price_file=` / `--export-price-file`): HUPX DAM download (60-min `Hour` or 15-min `Quarter hour`, EUR/MWh, DST repeats `9B` averaged, `Region` filtered) or generic `timestamp,price` (interval start; EUR/MWh unless header has `kwh`). Aligned onto the 15-min grid *before* the 1h resample, as interval start = consumption timestamp − 15 min (consumption labels are interval ends). Exact timestamp match, else month/day/time match for another year; >1% gaps raise. When present, column `export_price_eur_kwh` in `self.df` replaces the fixed `export_price` in `calculate_costs_and_savings()` (which also returns `export_revenue`, `export_kwh`, `avg_export_price`). The price file is part of the batch cache fingerprint
+- **`price_cache.py`**: rolling 1-year SI day-ahead price cache in `data/price_cache/` (gitignored): `SI_YYYY-MM.csv` per month + combined `export_prices.csv` (newest 365 days, 15-min, generic `timestamp,price_eur_mwh`). Source: Energy-Charts API (`/price?bzn=SI&start=&end=`, local dates, end inclusive, hourly before Oct 2025 expanded to 15-min, one request for all stale months, backoff on 429). `update_price_cache(today=...)` keeps finished complete months, refetches the current/incomplete ones, prunes months before the window, never overwrites with shorter data, collects errors instead of raising. GUI refreshes it via `app.on_startup` + every 6 h (`PRICE_CACHE_AUTO_UPDATE=0` disables; set in `tests/conftest.py`), . Export pricing defaults to **fixed**; market mode (GUI select / CLI `--export-pricing market`) uses the cache by default (an uploaded / `data/` `export_prices` file overrides it) with `export_price_alignment="calendar"` — always month/day/time against the last 365 days, whatever the consumption year; own files use `"auto"` (exact timestamps if covered). The alignment is part of the batch cache key
+- **`hupx_prices.py`**: CLI fetcher for the public HUPX Labs API (`/data/v1/dam_aggregated_trading_data[_15min]`, split at 2025-10-01, follows `nextPage`). Anonymous access only serves ~the last 2 months; older history needs a signed-in download from labs.hupx.hu. Not used by the GUI, so not in the Dockerfile
 
 GUI lookup (`_find_data_file`): uploaded files → `data/` → working directory, matching the stem with any supported extension (exact name first). Uploads keep their own extension and replace earlier uploads of the same input in other formats. CLI: `--production-file`, `--consumption-file`.
 
@@ -103,7 +106,7 @@ Both files exist in the repository root and are auto-detected by the GUI.
 
 ## Docker Deployment
 
-`docker compose up --build` builds and runs the GUI on port 8080. Place the production and consumption files (CSV or Excel) in a `data/` directory — it is volume-mounted into the container at `/app/data`. The `Dockerfile` uses uv and copies only `pyproject.toml`, `uv.lock`, `data_readers.py`, `power_flow_simulator.py`, and `gui.py` — add any new top-level module there.
+`docker compose up --build` builds and runs the GUI on port 8080. Place the production and consumption files (CSV or Excel) in a `data/` directory — it is volume-mounted into the container at `/app/data`. The `Dockerfile` uses uv and copies only `pyproject.toml`, `uv.lock`, `data_readers.py`, `power_flow_simulator.py`, `price_cache.py`, and `gui.py` — add any new top-level module there.
 
 ## Code Quality
 
@@ -122,6 +125,8 @@ Tests in `tests/` using pytest with fixtures in `conftest.py`:
 - `test_integration.py`: Full pipeline, determinism, edge cases (zero solar/consumption), MultiScenarioAnalyzer
 - `test_gui.py`: GUI unit tests (incl. file lookup/upload) + NiceGUI `User` fixture tests (page structure, tabs, inputs)
 - `test_holidays_and_cache.py`: Easter/holiday calendar, holiday off-peak pricing, batch cache invalidation on file replacement
+- `test_price_cache.py`: rolling window, single request, reuse/refetch, pruning, offline behaviour, DST/hourly expansion (API mocked, `today` injected)
+- `test_export_prices.py`: HUPX/generic price parsing, DST, alignment, market vs fixed revenue, fetcher (network mocked)
 - `test_data_readers.py`: CSV/XLSX/XLS reading, layout detection, delimiters/encodings, validation errors, simulator parity across formats. CSV/XLSX inputs are generated in `tmp_path`; `tests/fixtures/*.xls` are committed synthetic files (fake meter IDs) because pandas can't write XLS — regenerate with LibreOffice `soffice --headless --convert-to 'xls:MS Excel 97'`
 
 GUI tests use `nicegui.testing.user_plugin` (headless, no browser needed). Config in `pyproject.toml`: `asyncio_mode = "auto"`, `main_file = "gui.py"`.

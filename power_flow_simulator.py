@@ -72,7 +72,15 @@ from joblib import Memory
 from scipy.optimize import differential_evolution
 from tqdm import tqdm
 
-from data_readers import SUPPORTED_EXTENSIONS, load_consumption, load_production
+from data_readers import (
+    ALIGN_AUTO,
+    ALIGN_CALENDAR,
+    SUPPORTED_EXTENSIONS,
+    align_export_prices,
+    load_consumption,
+    load_export_prices,
+    load_production,
+)
 
 warnings.filterwarnings("ignore")
 
@@ -99,10 +107,11 @@ def _file_fingerprint(path: str) -> str:
     return _fingerprint_memo[key]
 
 
-def _input_fingerprint(production_file: str, consumption_file: str) -> str:
-    """Fingerprint of both input files, part of the batch cache key so that replacing a
-    file under the same name invalidates cached results."""
-    return f"{_file_fingerprint(production_file)}:{_file_fingerprint(consumption_file)}"
+def _input_fingerprint(*paths: str | None) -> str:
+    """Fingerprint of the input files (production, consumption, optional export prices),
+    part of the batch cache key so that replacing a file under the same name invalidates
+    cached results."""
+    return ":".join("none" if p is None else _file_fingerprint(p) for p in paths)
 
 
 def easter_sunday(year: int) -> datetime.date:
@@ -239,6 +248,9 @@ class PowerFlowSimulator:
         max_power_by_block: dict[int, float] = None,
         heating_config: dict = None,
         time_resolution: str = "15min",
+        export_price_file: str | None = None,
+        price_region: str = "SI",
+        export_price_alignment: str = ALIGN_AUTO,
     ):
         """
         Initialize the power flow simulator
@@ -263,6 +275,13 @@ class PowerFlowSimulator:
                 - end_hour (int): Daily end hour (0 = midnight, default: 0)
             time_resolution (str): Simulation bin width: "15min" or "1h".
                 "1h" aggregates the 15-min input data into hourly bins after loading.
+            export_price_file (str): Optional market price file (HUPX DAM download or
+                timestamp,price CSV). When set, exports are paid the price of their own
+                interval instead of the fixed ``export_price``.
+            price_region (str): Region to read from a multi-region HUPX file (default SI).
+            export_price_alignment (str): "auto" (exact timestamps when the prices cover
+                the simulated dates, else month/day/time) or "calendar" (always
+                month/day/time — used with the rolling last-year price cache).
         """
         # System specifications
         self.solar_panel_power_kw = solar_panel_power_kw
@@ -286,6 +305,9 @@ class PowerFlowSimulator:
         # Data files
         self.production_file = production_file
         self.consumption_file = consumption_file
+        self.export_price_file = export_price_file or None
+        self.price_region = price_region
+        self.export_price_alignment = export_price_alignment
 
         # Transmission costs (EUR/kWh) - 5 blocks (1=most expensive, 3=cheapest)
         if transmission_costs is None:
@@ -437,6 +459,17 @@ class PowerFlowSimulator:
             }
         )
 
+        # Market export prices, aligned on the 15-min input grid (averaged per hour
+        # by the resample below when running at 1h).
+        if self.export_price_file:
+            prices = load_export_prices(self.export_price_file, region=self.price_region)
+            self.df["export_price_eur_kwh"] = align_export_prices(
+                self.df["datetime"],
+                prices,
+                interval_minutes=15,
+                method=self.export_price_alignment,
+            ).to_numpy()
+
         if self.time_resolution == "1h":
             self.df = self._resample_to_hourly(self.df)
 
@@ -489,6 +522,8 @@ class PowerFlowSimulator:
                 "transmission_block": grouped["transmission_block"].agg(lambda s: s.mode().iloc[0]),
             }
         ).reset_index(drop=True)
+        if "export_price_eur_kwh" in df:
+            hourly["export_price_eur_kwh"] = grouped["export_price_eur_kwh"].mean().to_numpy()
         print(f"Resampled {len(df)} 15-min intervals into {len(hourly)} hourly bins")
         return hourly
 
@@ -946,7 +981,9 @@ class PowerFlowSimulator:
                                If None, uses self.peak_price
             off_peak_price (float): Off-peak electricity price in EUR/kWh (nights and weekends).
                                    If None, uses self.off_peak_price
-            export_price (float): Solar export feed-in tariff in EUR/kWh. Default: 0.0
+            export_price (float): Solar export feed-in tariff in EUR/kWh. Default: 0.0.
+                Ignored when the simulator was given an ``export_price_file``: each
+                interval's export is then paid that interval's market price.
             base_price (float): Legacy parameter - flat electricity price. Used if peak/off-peak are None
 
         Returns:
@@ -1009,7 +1046,11 @@ class PowerFlowSimulator:
                 base_price = 0.12
             print(f"Using flat pricing: €{base_price:.3f}/kWh")
 
-        print(f"Export price: €{export_price:.3f}/kWh")
+        use_market_export = "export_price_eur_kwh" in self.df
+        if use_market_export:
+            print(f"Export price: market prices from {self.export_price_file}")
+        else:
+            print(f"Export price: €{export_price:.3f}/kWh")
 
         # Calculate costs with battery system using transmission block pricing
         def get_transmission_cost(row):
@@ -1036,8 +1077,17 @@ class PowerFlowSimulator:
             lambda row: row["grid_import_kwh"] * get_total_price(row), axis=1
         ).sum()
 
-        # Export revenue (no transmission cost on exports)
-        export_revenue = self.simulation_results["grid_export_kwh"].sum() * export_price
+        # Export revenue (no transmission cost on exports). Market prices can be
+        # negative, in which case exporting in that interval costs money.
+        export_kwh = self.simulation_results["grid_export_kwh"].to_numpy()
+        total_export_kwh = float(export_kwh.sum())
+        if use_market_export:
+            export_revenue = float(
+                (export_kwh * self.df["export_price_eur_kwh"].to_numpy()[: len(export_kwh)]).sum()
+            )
+        else:
+            export_revenue = total_export_kwh * export_price
+        avg_export_price = export_revenue / total_export_kwh if total_export_kwh > 0 else 0.0
 
         # Calculate block-wise max power for monthly fees
         max_power_by_block = self.calculate_block_power("grid_import_kwh")
@@ -1086,6 +1136,10 @@ class PowerFlowSimulator:
         print("\nCost Analysis:")
         print(f"  Baseline (grid only): €{baseline_cost:.2f}/year")
         print(f"  Solar + Battery: €{net_cost_battery:.2f}/year")
+        print(
+            f"  Export revenue: €{export_revenue:.2f}/year "
+            f"({total_export_kwh:.0f} kWh at avg €{avg_export_price:.4f}/kWh)"
+        )
         if self.enable_power_smoothing:
             # Calculate potential power smoothing savings (this is already included in the costs above)
             total_power_smoothing = self.simulation_results["power_smoothing_discharge_kwh"].sum()
@@ -1106,6 +1160,9 @@ class PowerFlowSimulator:
             "baseline_cost": baseline_cost,
             "solar_battery_cost": net_cost_battery,
             "savings_vs_baseline": savings_vs_baseline,
+            "export_revenue": export_revenue,
+            "export_kwh": total_export_kwh,
+            "avg_export_price": avg_export_price,
         }
 
     def calculate_transmission_cost_breakdown(self) -> dict[str, dict[str, float]]:
@@ -1452,6 +1509,8 @@ def _cached_batch_simulation_func(
     heating_config_tuple: tuple = None,
     time_resolution: str = "15min",
     input_fingerprint: str = "",  # noqa: ARG001 - cache key only
+    export_price_file: str | None = None,
+    export_price_alignment: str = ALIGN_AUTO,
 ) -> dict[str, Any]:
     """
     Standalone cached simulation function for batch mode to avoid re-running identical simulations.
@@ -1506,6 +1565,8 @@ def _cached_batch_simulation_func(
                 if heating_config_tuple
                 else None,
                 time_resolution=time_resolution,
+                export_price_file=export_price_file,
+                export_price_alignment=export_price_alignment,
             )
 
             # Run simulation
@@ -1640,6 +1701,8 @@ class MultiScenarioAnalyzer:
         max_power_by_block: dict[int, float] = None,
         heating_config: dict = None,
         time_resolution: str = "15min",
+        export_price_file: str | None = None,
+        export_price_alignment: str = ALIGN_AUTO,
     ):
         """
         Multi-scenario analyzer for solar + battery systems
@@ -1667,6 +1730,8 @@ class MultiScenarioAnalyzer:
                 - start_hour (int): Daily start hour (default: 7)
                 - end_hour (int): Daily end hour (0 = midnight, default: 0)
             time_resolution (str): Simulation bin width: "15min" or "1h"
+            export_price_file (str): Optional market price file; overrides export_price
+            export_price_alignment (str): "auto" or "calendar", see PowerFlowSimulator
         """
         self.solar_range = solar_range or [5, 8.5, 10, 15, 20]
         self.inverter_range = inverter_range or [5, 8, 10, 15]
@@ -1676,6 +1741,8 @@ class MultiScenarioAnalyzer:
         self.peak_price = peak_price
         self.off_peak_price = off_peak_price
         self.export_price = export_price
+        self.export_price_file = export_price_file or None
+        self.export_price_alignment = export_price_alignment
         self.solar_cost_per_kw = solar_cost_per_kw
         self.inverter_cost_per_kw = inverter_cost_per_kw
         self.battery_cost_per_kwh = battery_cost_per_kwh
@@ -1818,7 +1885,11 @@ class MultiScenarioAnalyzer:
             if self.heating_config
             else None,
             time_resolution=self.time_resolution,
-            input_fingerprint=_input_fingerprint(self.production_file, self.consumption_file),
+            input_fingerprint=_input_fingerprint(
+                self.production_file, self.consumption_file, self.export_price_file
+            ),
+            export_price_file=self.export_price_file,
+            export_price_alignment=self.export_price_alignment,
         )
 
     def run_all_scenarios(self) -> list[dict[str, Any]]:
@@ -2753,8 +2824,10 @@ class MultiScenarioAnalyzer:
                     else None,
                     time_resolution=self.time_resolution,
                     input_fingerprint=_input_fingerprint(
-                        self.production_file, self.consumption_file
+                        self.production_file, self.consumption_file, self.export_price_file
                     ),
+                    export_price_file=self.export_price_file,
+                    export_price_alignment=self.export_price_alignment,
                 )
 
                 if result["simulation_failed"]:
@@ -3140,6 +3213,20 @@ def main():
         help="Solar export price in EUR/kWh (default: 0.01)",
     )
     parser.add_argument(
+        "--export-price-file",
+        default=None,
+        help="Market export prices (HUPX DAM download, or timestamp,price CSV in EUR/MWh); "
+        "overrides --export-price. Fetch recent data with hupx_prices.py",
+    )
+    parser.add_argument(
+        "--export-pricing",
+        choices=["fixed", "market"],
+        default="fixed",
+        help="fixed (default): --export-price for every kWh; market: SI day-ahead prices of "
+        "the last 365 days from the rolling price cache (data/price_cache, refreshed on "
+        "each run), matched by month/day/time whatever the consumption year",
+    )
+    parser.add_argument(
         "--time-resolution",
         type=str,
         choices=["15min", "1h"],
@@ -3399,6 +3486,19 @@ def main():
     )
     args = parser.parse_args()
 
+    # Export pricing: own price file > market (last-year cache) > fixed price (default)
+    export_price_alignment = ALIGN_AUTO
+    if args.export_price_file:
+        pass
+    elif args.export_pricing == "market":
+        from price_cache import market_price_file
+
+        try:
+            args.export_price_file = market_price_file()
+        except RuntimeError as exc:
+            raise SystemExit(f"{exc} (--export-pricing fixed)") from exc
+        export_price_alignment = ALIGN_CALENDAR
+
     def parse_range(range_str):
         """Parse comma-separated range string to list of floats"""
         return [float(x.strip()) for x in range_str.split(",")]
@@ -3418,7 +3518,10 @@ def main():
         print(
             f"Electricity prices: €{args.peak_price:.3f}/kWh peak, €{args.off_peak_price:.3f}/kWh off-peak"
         )
-        print(f"Export price: €{args.export_price:.3f}/kWh")
+        if args.export_price_file:
+            print(f"Export price: market prices from {args.export_price_file}")
+        else:
+            print(f"Export price: €{args.export_price:.3f}/kWh")
         if args.add_heating_load:
             print(
                 f"Heating load: {args.heating_kwh} kWh/season, {args.heating_start_hour}:00-{'midnight' if args.heating_end_hour == 0 else f'{args.heating_end_hour}:00'}"
@@ -3498,6 +3601,8 @@ def main():
             if args.add_heating_load
             else None,
             time_resolution=args.time_resolution,
+            export_price_file=args.export_price_file,
+            export_price_alignment=export_price_alignment,
             production_file=args.production_file,
             consumption_file=args.consumption_file,
         )
@@ -3608,6 +3713,8 @@ def main():
             if args.add_heating_load
             else None,
             time_resolution=args.time_resolution,
+            export_price_file=args.export_price_file,
+            export_price_alignment=export_price_alignment,
             production_file=args.production_file,
             consumption_file=args.consumption_file,
         )
