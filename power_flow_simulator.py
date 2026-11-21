@@ -57,6 +57,9 @@ License: MIT
 """
 
 import argparse
+import datetime
+import hashlib
+import os
 import warnings
 from itertools import product
 from typing import Any
@@ -75,6 +78,72 @@ warnings.filterwarnings("ignore")
 
 # Initialize joblib memory cache
 memory = Memory(location=".cache", verbose=0)
+
+
+_fingerprint_memo: dict[tuple[str, int, int], str] = {}
+
+
+def _file_fingerprint(path: str) -> str:
+    """SHA-256 of a file's contents, memoized on (path, mtime, size) to avoid rehashing."""
+    try:
+        st = os.stat(path)
+    except OSError:
+        return "missing"  # Let the simulation itself report the missing file
+    key = (os.path.abspath(path), st.st_mtime_ns, st.st_size)
+    if key not in _fingerprint_memo:
+        h = hashlib.sha256()
+        with open(path, "rb") as fh:
+            for chunk in iter(lambda: fh.read(1 << 20), b""):
+                h.update(chunk)
+        _fingerprint_memo[key] = h.hexdigest()
+    return _fingerprint_memo[key]
+
+
+def _input_fingerprint(production_file: str, consumption_file: str) -> str:
+    """Fingerprint of both input files, part of the batch cache key so that replacing a
+    file under the same name invalidates cached results."""
+    return f"{_file_fingerprint(production_file)}:{_file_fingerprint(consumption_file)}"
+
+
+def easter_sunday(year: int) -> datetime.date:
+    """Gregorian Easter Sunday (anonymous Gregorian / Meeus algorithm)."""
+    a = year % 19
+    b, c = divmod(year, 100)
+    d, e = divmod(b, 4)
+    f = (b + 8) // 25
+    g = (b - f + 1) // 3
+    h = (19 * a + b - d - g + 15) % 30
+    i, k = divmod(c, 4)
+    m = (32 + 2 * e + 2 * i - h - k) % 7
+    n = (a + 11 * h + 22 * m) // 451
+    month, day = divmod(h + m - 7 * n + 114, 31)
+    return datetime.date(year, month, day + 1)
+
+
+def slovenian_holidays(year: int) -> set[datetime.date]:
+    """Work-free days in Slovenia (dela prosti dnevi) for the given year."""
+    fixed = [
+        (1, 1),  # New Year
+        (1, 2),  # New Year (second day)
+        (2, 8),  # Prešeren Day
+        (4, 27),  # Day of Uprising Against Occupation
+        (5, 1),  # Labour Day
+        (5, 2),  # Labour Day
+        (6, 25),  # Statehood Day
+        (8, 15),  # Assumption Day
+        (10, 31),  # Reformation Day
+        (11, 1),  # Remembrance Day
+        (12, 25),  # Christmas
+        (12, 26),  # Independence and Unity Day
+    ]
+    days = {datetime.date(year, m, d) for m, d in fixed}
+    easter = easter_sunday(year)
+    days |= {
+        easter,  # Easter Sunday
+        easter + datetime.timedelta(days=1),  # Easter Monday
+        easter + datetime.timedelta(days=49),  # Whit Sunday
+    }
+    return days
 
 
 class PowerFlowSimulator:
@@ -375,22 +444,9 @@ class PowerFlowSimulator:
         self.df["weekday"] = self.df["datetime"].dt.weekday  # 0=Monday, 6=Sunday
         self.df["month"] = self.df["datetime"].dt.month
 
-        # Define 2024 Slovenian holidays (off-peak pricing)
-        holidays_2024 = [
-            "2024-01-01",
-            "2024-01-02",
-            "2024-02-08",
-            "2024-04-10",
-            "2024-05-01",
-            "2024-05-02",
-            "2024-06-25",
-            "2024-08-15",
-            "2024-10-31",
-            "2024-11-01",
-            "2024-12-25",
-            "2024-12-26",
-        ]
-        holiday_dates = pd.to_datetime(holidays_2024).date
+        # Slovenian work-free holidays (off-peak pricing) for every year in the data
+        years = self.df["datetime"].dt.year.unique()
+        holiday_dates = set().union(*(slovenian_holidays(int(y)) for y in years))
         self.df["is_holiday"] = self.df["datetime"].dt.date.isin(holiday_dates)
 
         # Peak hours: 6am-10pm on weekdays, excluding holidays
@@ -1395,12 +1451,16 @@ def _cached_batch_simulation_func(
     min_soc_reserve: float = 0.5,
     heating_config_tuple: tuple = None,
     time_resolution: str = "15min",
+    input_fingerprint: str = "",  # noqa: ARG001 - cache key only
 ) -> dict[str, Any]:
     """
     Standalone cached simulation function for batch mode to avoid re-running identical simulations.
 
     Note: heating_config is passed as a tuple for cache hashability.
     Format: (heating_kwh, start_hour, end_hour) or None
+
+    input_fingerprint is unused in the body; it hashes the input files' contents into the
+    cache key so a file replaced under the same path is not served stale results.
     """
     try:
         # Suppress all output for batch mode (including constructor)
@@ -1758,6 +1818,7 @@ class MultiScenarioAnalyzer:
             if self.heating_config
             else None,
             time_resolution=self.time_resolution,
+            input_fingerprint=_input_fingerprint(self.production_file, self.consumption_file),
         )
 
     def run_all_scenarios(self) -> list[dict[str, Any]]:
@@ -2691,6 +2752,9 @@ class MultiScenarioAnalyzer:
                     if self.heating_config
                     else None,
                     time_resolution=self.time_resolution,
+                    input_fingerprint=_input_fingerprint(
+                        self.production_file, self.consumption_file
+                    ),
                 )
 
                 if result["simulation_failed"]:

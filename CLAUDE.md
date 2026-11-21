@@ -62,7 +62,7 @@ uv sync --extra test
 ### Two Main Classes
 
 **`PowerFlowSimulator`** — Single scenario simulation engine
-- `load_and_align_data()`: Loads production (solar baseline) and consumption (usage) files via `data_readers`, parses timestamps, adds time features (hour, weekday, month, holiday, transmission block)
+- `load_and_align_data()`: Loads production (solar baseline) and consumption (usage) files via `data_readers`, parses timestamps, adds time features (hour, weekday, month, holiday, transmission block). Holidays come from `slovenian_holidays(year)` (fixed dates + Easter-based) for every year in the data
 - `apply_heating_load()`: Optional synthetic heat pump load (Oct–Mar) with monthly weighting factors
 - `scale_solar_generation()`: Scales from 640.6 kW baseline to target capacity, applies inverter clipping
 - `simulate_power_flows()`: Core 15-minute loop — manages battery charge/discharge, grid import/export, optional power smoothing (peak shaving)
@@ -70,7 +70,7 @@ uv sync --extra test
 
 **`MultiScenarioAnalyzer`** — Batch analysis across parameter combinations
 - Generates all valid (solar × inverter × battery) scenarios (constraint: inverter ≤ solar)
-- Runs each through `PowerFlowSimulator` with joblib caching (`_cached_batch_simulation_func`)
+- Runs each through `PowerFlowSimulator` with joblib caching (`_cached_batch_simulation_func`); the cache key includes a SHA-256 of both input files (`_input_fingerprint`), so replacing a file under the same path invalidates it
 - Calculates ROI, NPV (20-year), payback periods, loan amortization
 - Produces heatmap visualizations (savings, ROI, self-sufficiency, Pareto)
 - `optimize_npv_differential_evolution()`: scipy-based optimization for optimal system configuration
@@ -121,6 +121,7 @@ Tests in `tests/` using pytest with fixtures in `conftest.py`:
 - `test_heating_load.py`: Energy distribution, monthly weighting, edge cases
 - `test_integration.py`: Full pipeline, determinism, edge cases (zero solar/consumption), MultiScenarioAnalyzer
 - `test_gui.py`: GUI unit tests (incl. file lookup/upload) + NiceGUI `User` fixture tests (page structure, tabs, inputs)
+- `test_holidays_and_cache.py`: Easter/holiday calendar, holiday off-peak pricing, batch cache invalidation on file replacement
 - `test_data_readers.py`: CSV/XLSX/XLS reading, layout detection, delimiters/encodings, validation errors, simulator parity across formats. CSV/XLSX inputs are generated in `tmp_path`; `tests/fixtures/*.xls` are committed synthetic files (fake meter IDs) because pandas can't write XLS — regenerate with LibreOffice `soffice --headless --convert-to 'xls:MS Excel 97'`
 
 GUI tests use `nicegui.testing.user_plugin` (headless, no browser needed). Config in `pyproject.toml`: `asyncio_mode = "auto"`, `main_file = "gui.py"`.
