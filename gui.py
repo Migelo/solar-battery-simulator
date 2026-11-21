@@ -318,7 +318,6 @@ async def run_single_simulation(params: dict, results_container, spinner):
             min_soc_reserve=params["min_soc_reserve"],
             max_power_by_block=max_power_by_block,
             heating_config=heating_config,
-            time_resolution=params.get("time_resolution", "15min"),
             production_file=params.get("production_file", _find_data_file("production.csv")),
             consumption_file=params.get("consumption_file", _find_data_file("consumption.csv")),
             export_price_file=export_price_file,
@@ -345,7 +344,6 @@ async def run_single_simulation(params: dict, results_container, spinner):
         days = 7
         kw_factor = sim.kw_factor
         intervals_per_hour = int(1 / sim.interval_hours)
-        bin_label = "Hourly bins" if sim.time_resolution == "1h" else "15-min intervals"
         plot_data = r.head(days * 24 * intervals_per_hour).copy()
         idx = range(len(plot_data))
 
@@ -396,7 +394,7 @@ async def run_single_simulation(params: dict, results_container, spinner):
                 idx, 0, -plot_data["grid_export_kwh"] * kw_factor, alpha=0.2, color="purple"
             )
             ax3.set_ylabel("Power (kW)")
-            ax3.set_xlabel(bin_label)
+            ax3.set_xlabel("15-min intervals")
             ax3.legend()
             ax3.grid(True, alpha=0.3)
 
@@ -576,7 +574,6 @@ async def run_batch_analysis(params: dict, results_container, spinner):
             min_soc_reserve=params["min_soc_reserve"],
             max_power_by_block=max_power_by_block,
             heating_config=heating_config,
-            time_resolution=params.get("time_resolution", "15min"),
             production_file=params.get("production_file", _find_data_file("production.csv")),
             consumption_file=params.get("consumption_file", _find_data_file("consumption.csv")),
             export_price_file=export_price_file,
@@ -792,7 +789,6 @@ DEFAULTS = {
     "pf5": 0.0,
     "ove_spte_fee": 3.44078,
     "enable_power_smoothing": False,
-    "time_resolution": "15min",
     "min_soc_reserve": 0.2,
     "max_power_block1": 250.0,
     "max_power_block2": 250.0,
@@ -839,17 +835,6 @@ def _number(label, key, inputs, *, step=None, suffix="", **kwargs):
     n = ui.number(label=label, value=DEFAULTS[key], step=step, suffix=suffix, **kwargs)
     inputs[key] = n
     return n
-
-
-def _resolution_section(inputs):
-    with ui.expansion("Time Resolution", icon="schedule").classes("w-full"):
-        sel = ui.select(
-            options=["15min", "1h"],
-            label="Simulation bin width",
-            value=DEFAULTS["time_resolution"],
-        ).classes("w-full")
-        sel.tooltip("1h aggregates the 15-min input data into hourly bins")
-        inputs["time_resolution"] = sel
 
 
 def _pricing_section(inputs):
@@ -1059,7 +1044,6 @@ def index():
                                         "Efficiency", "battery_efficiency", single_inputs, step=0.05
                                     )
 
-                            _resolution_section(single_inputs)
                             _pricing_section(single_inputs)
                             _transmission_section(single_inputs)
                             _smoothing_section(single_inputs)
@@ -1186,7 +1170,6 @@ def index():
                                     loan_rate.bind_enabled_from(use_loan, "value")
                                     loan_years.bind_enabled_from(use_loan, "value")
 
-                            _resolution_section(batch_inputs)
                             _pricing_section(batch_inputs)
                             _transmission_section(batch_inputs)
                             _smoothing_section(batch_inputs)
