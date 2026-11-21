@@ -3,22 +3,19 @@
   "extends": [
     "config:recommended",
     ":dependencyDashboard",
-    "helpers:pinGitHubActionDigests"
+    "helpers:pinGitHubActionDigests",
+    "group:all",
+    "schedule:monthly"
   ],
   "minimumReleaseAge": "10 days",
   "internalChecksFilter": "strict",
   "automerge": true,
   "lockFileMaintenance": {
     "enabled": true,
-    "schedule": ["after 9pm on sunday"]
+    "schedule": ["* 0-3 1 * *"]
   },
   "vulnerabilityAlerts": {
-    "minimumReleaseAge": null
-  },
-  "packageRules": [
-    {
-      "matchManagers": ["github-actions"],
-      "groupName": "GitHub Actions"
-    }
-  ]
+    "minimumReleaseAge": null,
+    "schedule": []
+  }
 }
