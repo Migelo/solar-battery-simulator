@@ -13,7 +13,11 @@ import pandas as pd
 from nicegui import app, ui
 
 from data_readers import ALIGN_AUTO, ALIGN_CALENDAR, SUPPORTED_EXTENSIONS
-from power_flow_simulator import MultiScenarioAnalyzer, PowerFlowSimulator
+from power_flow_simulator import (
+    DEFAULT_REFERENCE_SOLAR_KW,
+    MultiScenarioAnalyzer,
+    PowerFlowSimulator,
+)
 from price_cache import DEFAULT_CACHE_DIR, cached_price_file, market_price_file, update_price_cache
 
 matplotlib.use("Agg")
@@ -77,8 +81,12 @@ def _handle_upload(event, target_name: str, label_widget) -> None:
     label_widget.text = f"{stem}: {event.name}"
 
 
-def _data_files_section():
-    """Create file upload section — collapsed when files are already found."""
+def _data_files_section(inputs):
+    """Create file upload section — collapsed when files are already found.
+
+    Also holds the reference capacity of the production file (registered in ``inputs``),
+    since it describes that file rather than the simulated system.
+    """
     prod_found = _find_data_file("production.csv")
     cons_found = _find_data_file("consumption.csv")
     prod_exists = Path(prod_found).exists()
@@ -102,6 +110,12 @@ def _data_files_section():
                 auto_upload=True,
                 on_upload=lambda e: _handle_upload(e, "production.csv", prod_label),
             ).props(f"accept={_ACCEPT} flat dense").classes("max-w-[180px]")
+            _number(
+                "Reference power", "reference_solar_kw", inputs, step=0.1, min=0.1, suffix="kWp"
+            ).classes("w-36").tooltip(
+                "Installed capacity of the plant that recorded the production file; "
+                "generation is scaled from it to the simulated solar size"
+            )
 
         with ui.row().classes("w-full q-gutter-sm items-center"):
             cons_label = ui.label(f"consumption: {'found' if cons_exists else 'missing'}").classes(
@@ -250,6 +264,7 @@ async def run_single_simulation(params: dict, results_container, spinner):
             export_price_file=export_price_file,
             export_price_alignment=export_price_alignment,
             export_fee_eur_mwh=params.get("export_fee", 0.0),
+            reference_solar_kw=params.get("reference_solar_kw") or DEFAULT_REFERENCE_SOLAR_KW,
         )
 
         sim.load_and_align_data()
@@ -510,6 +525,7 @@ async def run_batch_analysis(params: dict, results_container, spinner):
             export_price_file=export_price_file,
             export_price_alignment=export_price_alignment,
             export_fee_eur_mwh=params.get("export_fee", 0.0),
+            reference_solar_kw=params.get("reference_solar_kw") or DEFAULT_REFERENCE_SOLAR_KW,
         )
 
         progress["phase"] = "Generating scenarios"
@@ -705,6 +721,7 @@ DEFAULTS = {
     "off_peak_price": 0.10664,
     "export_price": 0.01,
     "export_fee": 0.0,
+    "reference_solar_kw": DEFAULT_REFERENCE_SOLAR_KW,
     "export_price_mode": EXPORT_MODE_FIXED,
     "tb1": 0.01282,
     "tb2": 0.01216,
@@ -893,7 +910,7 @@ def index():
                                     ),
                                 ).props("color=primary dense")
 
-                            _data_files_section()
+                            _data_files_section(single_inputs)
 
                             with (
                                 ui.expansion("System Specs", icon="solar_power", value=True)
@@ -962,7 +979,7 @@ def index():
                                     ),
                                 ).props("color=primary dense no-wrap")
 
-                            _data_files_section()
+                            _data_files_section(batch_inputs)
 
                             with (
                                 ui.expansion("Parameter Ranges", icon="grid_view", value=True)

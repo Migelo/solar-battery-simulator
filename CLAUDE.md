@@ -64,7 +64,7 @@ uv sync --extra test
 **`PowerFlowSimulator`** — Single scenario simulation engine
 - `load_and_align_data()`: Loads production (solar baseline) and consumption (usage) files via `data_readers`, parses timestamps, adds time features (hour, weekday, month, holiday, transmission block). Holidays come from `slovenian_holidays(year)` (fixed dates + Easter-based) for every year in the data
 - `apply_heating_load()`: Optional synthetic heat pump load (Oct–Mar) with monthly weighting factors
-- `scale_solar_generation()`: Scales from 640.6 kW baseline to target capacity, applies inverter clipping
+- `scale_solar_generation()`: Scales from the reference capacity of the production file (`reference_solar_kw`, default `DEFAULT_REFERENCE_SOLAR_KW` = 640.6 kWp; CLI `--reference-solar-power`, GUI "Reference power" next to the production upload; part of the batch cache key) to target capacity, applies inverter clipping
 - `simulate_power_flows()`: Core 15-minute loop — manages battery charge/discharge, grid import/export, optional power smoothing (peak shaving)
 - `calculate_costs_and_savings()`: Economic analysis with 5-block transmission costs, monthly power fees, OVE-SPTE weighted costs
 
