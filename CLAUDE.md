@@ -18,9 +18,12 @@ uv run power_flow_simulator.py --solar-power 15 --battery-capacity 20
 # Run the simulator CLI (batch mode)
 uv run power_flow_simulator.py --batch-mode --solar-range 10,15,20 --battery-range 0,10,20 --inverter-range 8,10,15
 
-# Windows one-click: double-click start_windows.bat (installs uv if missing, opens the browser).
+# Windows exe (for non-technical users): windows_exe.py is the entry point, build_exe.py runs
+# PyInstaller (--onefile; Windows only via CI, workflow windows-exe.yml builds + smoke-tests it on
+# every PR and attaches it to a GitHub Release on v* tags). The exe chdirs to its own folder.
+# From source on Windows: double-click start_windows.bat (installs uv if missing, opens browser).
 # Env: GUI_HOST (default 127.0.0.1 = no remote access; Docker image sets 0.0.0.0 in-container,
-# compose publishes on 127.0.0.1 only), GUI_PORT (8080), GUI_OPEN_BROWSER=0
+# compose publishes on 127.0.0.1 only), GUI_PORT (8080, else a free port if taken), GUI_OPEN_BROWSER=0
 # Kept with CRLF bytes (.gitattributes `-text`); CI `windows` job runs tests + launches it
 
 # Run with Docker Compose (place CSV/Excel input files in data/)

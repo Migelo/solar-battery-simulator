@@ -1,0 +1,74 @@
+name: Windows exe
+
+on:  # yamllint disable-line rule:truthy
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  build:
+    runs-on: windows-latest
+    timeout-minutes: 30
+    permissions:
+      contents: write  # attach the exe to the release on v* tags
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v10.4.0
+        with:
+          version: "latest"
+          enable-cache: true
+
+      - name: Build SolarBatterySimulator.exe
+        run: uv run --frozen --python 3.13 --with pyinstaller==6.22.3 python build_exe.py
+
+      - name: Smoke test the exe from a clean folder
+        shell: pwsh
+        env:
+          GUI_OPEN_BROWSER: "0"
+          PRICE_CACHE_AUTO_UPDATE: "0"
+        run: |
+          $dir = Join-Path $env:RUNNER_TEMP "exetest"
+          New-Item -ItemType Directory -Force "$dir\data" | Out-Null
+          Copy-Item dist\SolarBatterySimulator.exe $dir
+          Copy-Item tests\fixtures\production.xls "$dir\data\production.xls"
+          Copy-Item tests\fixtures\smart_meter.xls "$dir\data\consumption.xls"
+          # Start from another folder: the exe must still use the data\ next to itself.
+          $p = Start-Process "$dir\SolarBatterySimulator.exe" -WorkingDirectory $env:RUNNER_TEMP `
+            -PassThru -NoNewWindow -RedirectStandardOutput "$dir\out.log" -RedirectStandardError "$dir\err.log"
+          $html = $null
+          for ($i = 0; $i -lt 90 -and -not $html; $i++) {
+            Start-Sleep -Seconds 2
+            try { $html = (Invoke-WebRequest -UseBasicParsing http://127.0.0.1:8080).Content } catch {}
+          }
+          Stop-Process -Id $p.Id -Force
+          Get-Content "$dir\out.log", "$dir\err.log"
+          if (-not $html) { throw "exe did not serve http://127.0.0.1:8080" }
+          if ($html -notmatch "production: found" -or $html -notmatch "consumption: found") {
+            throw "exe did not find the data files next to it"
+          }
+          if (-not (Test-Path "$dir\.nicegui")) { throw "exe did not run from its own folder" }
+          "exe OK: page served, data files found"
+
+      - name: Upload exe
+        uses: actions/upload-artifact@v5
+        with:
+          name: SolarBatterySimulator-windows
+          path: dist/SolarBatterySimulator.exe
+
+      - name: Attach exe to release
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: >
+          gh release create ${{ github.ref_name }} dist/SolarBatterySimulator.exe
+          --title "${{ github.ref_name }}" --generate-notes

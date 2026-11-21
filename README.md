@@ -11,21 +11,21 @@ A Python tool for simulating and optimizing solar photovoltaic (PV) systems with
 - **Heating load modeling** - Simulate adding heat pump load to existing consumption
 - **Slovenian tariff support** - 5-block transmission costs, OVE-SPTE fees, seasonal pricing
 
-## Windows: one-click start
+## Windows: download and double-click
 
-1. On GitHub click **Code → Download ZIP** and extract it (or `git clone`).
-2. Double-click **`start_windows.bat`**. If Windows warns about a downloaded file, choose
-   **More info → Run anyway**.
-3. Your browser opens the simulator at <http://localhost:8080>. Keep the black window open
-   while you work; close it to stop.
+1. Download **[SolarBatterySimulator.exe](https://github.com/Migelo/solar-battery-simulator/releases/latest/download/SolarBatterySimulator.exe)**
+   and put it in a folder of its own (e.g. `Documents\Solar Simulator`).
+2. Double-click it. Windows may say *"Windows protected your PC"* because the app isn't
+   code-signed: click **More info → Run anyway** (only needed the first time).
+3. Your browser opens the simulator. The first start takes up to a minute; later starts are faster.
+   Keep the black window open while you work; close it to stop the simulator.
 
-The first start installs [uv](https://docs.astral.sh/uv/), which downloads Python and the
-dependencies (internet needed, a few minutes). Later starts take seconds. Put your production
-and consumption files in `data/` or upload them in the GUI. If port 8080 is taken, run
-`set GUI_PORT=8090 & start_windows.bat` from a command prompt.
+Nothing needs to be installed. Put your production and consumption files in a `data` folder
+next to the exe, or upload them in the browser. The simulator only accepts connections from
+the same PC, so no firewall prompt appears and nobody else on your network can open it.
 
-The simulator only accepts connections from the same PC (`127.0.0.1`), so no firewall prompt
-appears and nobody else on your network can open it.
+Running from source instead? Double-click `start_windows.bat` (installs [uv](https://docs.astral.sh/uv/)
+on first use).
 
 ## Installation
 

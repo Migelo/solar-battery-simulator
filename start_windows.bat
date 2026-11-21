@@ -20,17 +20,15 @@ exit /b 1
 
 :have_uv
 set "GUI_HOST=127.0.0.1"
-if not defined GUI_PORT set "GUI_PORT=8080"
 set "PYTHONUTF8=1"
 echo.
-echo Starting the simulator - your browser will open at http://localhost:%GUI_PORT%
+echo Starting the simulator - your browser will open in a moment.
 echo Keep this window open while you use it; close it to stop the simulator.
 echo.
 uv run --frozen gui.py
 if errorlevel 1 (
     echo.
     echo The simulator stopped with an error ^(see above^).
-    echo If port %GUI_PORT% is in use, close the other program or run: set GUI_PORT=8090 ^& start_windows.bat
     pause
 )
 endlocal
