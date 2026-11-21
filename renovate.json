@@ -1,9 +1,24 @@
 {
- "$schema": "https://docs.renovatebot.com/renovate-schema.json",
- "extends": ["config:recommended"],
- "automerge": true,
- "lockFileMaintenance": {
-   "enabled": true,
-   "schedule":["after 9pm on sunday"]
- }
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": [
+    "config:recommended",
+    ":dependencyDashboard",
+    "helpers:pinGitHubActionDigests"
+  ],
+  "minimumReleaseAge": "10 days",
+  "internalChecksFilter": "strict",
+  "automerge": true,
+  "lockFileMaintenance": {
+    "enabled": true,
+    "schedule": ["after 9pm on sunday"]
+  },
+  "vulnerabilityAlerts": {
+    "minimumReleaseAge": null
+  },
+  "packageRules": [
+    {
+      "matchManagers": ["github-actions"],
+      "groupName": "GitHub Actions"
+    }
+  ]
 }
