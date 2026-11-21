@@ -1745,7 +1745,7 @@ class MultiScenarioAnalyzer:
             battery_maintenance_fee_per_kwh (float): Annual maintenance fee per kWh of battery (EUR/kWh/year)
             discount_rate (float): Annual discount rate for NPV calculations (default: 0.05 = 5%)
             loan_rate (float): Annual loan interest rate (default: 0.03 = 3%)
-            loan_years (int): Loan term in years (default: 10)
+            loan_years (int): Loan term in years; 0 = no loan, paid in cash (default: 10)
             transmission_costs (Dict[str, float]): Transmission costs by block (block1-block5)
             heating_config (dict): Heating load configuration with keys:
                 - heating_kwh (float): Total heating energy for season in kWh
@@ -1983,16 +1983,9 @@ class MultiScenarioAnalyzer:
             # Net annual cash flow = savings - maintenance - loan payments
             net_annual_cash_flow = annual_savings - annual_maintenance_cost - annual_loan_payment
 
-            # Calculate NPV over 20 years (no upfront investment, just annual cash flows)
-            npv_20_years = 0
-            for year in range(1, 21):  # Years 1-20
-                if year <= self.loan_years:
-                    # Years 1-10: Pay loan + maintenance, receive savings
-                    annual_cash_flow = net_annual_cash_flow
-                else:
-                    # Years 11-20: No loan payments, just maintenance
-                    annual_cash_flow = annual_savings - annual_maintenance_cost
-                npv_20_years += annual_cash_flow / ((1 + self.discount_rate) ** year)
+            npv_20_years = self.calculate_npv_20_years(
+                total_investment, annual_savings, annual_maintenance_cost
+            )
 
             # Calculate key metrics
             total_consumption = simulation_results["consumption_kwh"].sum()
@@ -2722,7 +2715,7 @@ class MultiScenarioAnalyzer:
         Returns:
             float: Annual loan payment
         """
-        if principal <= 0:
+        if principal <= 0 or self.loan_years <= 0:
             return 0
 
         if self.loan_rate == 0:
@@ -2733,6 +2726,25 @@ class MultiScenarioAnalyzer:
         r = self.loan_rate
         n = self.loan_years
         return principal * (r * (1 + r) ** n) / ((1 + r) ** n - 1)
+
+    def calculate_npv_20_years(
+        self, total_investment: float, annual_savings: float, annual_maintenance_cost: float
+    ) -> float:
+        """
+        20-year NPV of the system.
+
+        With a loan (``loan_years > 0``) the investment is financed: no upfront payment,
+        loan payments during the loan term. Without a loan (``loan_years <= 0``) the
+        investment is paid in cash at year 0.
+        """
+        annual_loan_payment = self.calculate_loan_payment(total_investment)
+        npv = 0.0 if self.loan_years > 0 else -total_investment
+        for year in range(1, 21):
+            cash_flow = annual_savings - annual_maintenance_cost
+            if year <= self.loan_years:
+                cash_flow -= annual_loan_payment
+            npv += cash_flow / ((1 + self.discount_rate) ** year)
+        return npv
 
     def optimize_npv_differential_evolution(
         self,
@@ -2883,18 +2895,9 @@ class MultiScenarioAnalyzer:
                     + annual_battery_maintenance
                     + annual_general_one_percent_maintenance
                 )
-                annual_loan_payment = self.calculate_loan_payment(total_investment)
-
-                # Calculate 20-year NPV
-                npv_20_years = 0
-                for year in range(1, 21):  # Years 1-20
-                    if year <= self.loan_years:
-                        annual_cash_flow = (
-                            annual_savings - annual_maintenance_cost - annual_loan_payment
-                        )
-                    else:
-                        annual_cash_flow = annual_savings - annual_maintenance_cost
-                    npv_20_years += annual_cash_flow / ((1 + self.discount_rate) ** year)
+                npv_20_years = self.calculate_npv_20_years(
+                    total_investment, annual_savings, annual_maintenance_cost
+                )
 
                 # Track best solution
                 if npv_20_years > self._best_npv:
@@ -3517,7 +3520,10 @@ def main():
         "--loan-rate", type=float, default=0.03, help="Annual loan interest rate (default: 0.03)"
     )
     parser.add_argument(
-        "--loan-years", type=int, default=10, help="Loan term in years (default: 10)"
+        "--loan-years",
+        type=int,
+        default=10,
+        help="Loan term in years; 0 = no loan, paid in cash (default: 10)",
     )
 
     # Optimization parameters

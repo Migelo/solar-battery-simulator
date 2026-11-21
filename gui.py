@@ -568,7 +568,7 @@ async def run_batch_analysis(params: dict, results_container, spinner):
             battery_maintenance_fee_per_kwh=params["battery_maintenance_fee_per_kwh"],
             discount_rate=params["discount_rate"],
             loan_rate=params["loan_rate"],
-            loan_years=params["loan_years"],
+            loan_years=_loan_years(params),
             transmission_costs=transmission_costs,
             monthly_power_fees=monthly_power_fees,
             ove_spte_fee=params["ove_spte_fee"],
@@ -813,9 +813,17 @@ DEFAULTS = {
     "maintenance_fee_per_kw": 10.0,
     "battery_maintenance_fee_per_kwh": 5.0,
     "discount_rate": 0.05,
+    "use_loan": True,
     "loan_rate": 0.03,
     "loan_years": 10,
 }
+
+
+def _loan_years(params: dict) -> int:
+    """Loan term for the analyzer; 0 (cash purchase) when the loan is off or the term is < 1."""
+    if not params.get("use_loan", True):
+        return 0
+    return max(int(params.get("loan_years") or 0), 0)
 
 
 def build_shared_params(inputs: dict) -> dict:
@@ -1164,10 +1172,19 @@ def index():
                                 .classes("w-full")
                                 .props("dense")
                             ):
+                                use_loan = ui.switch("Use loan", value=DEFAULTS["use_loan"])
+                                use_loan.tooltip("Off: the investment is paid in cash upfront")
+                                batch_inputs["use_loan"] = use_loan
                                 with ui.grid(columns=3).classes("w-full gap-1"):
                                     _number("Discount", "discount_rate", batch_inputs, step=0.01)
-                                    _number("Loan rate", "loan_rate", batch_inputs, step=0.01)
-                                    _number("Loan yrs", "loan_years", batch_inputs, step=1)
+                                    loan_rate = _number(
+                                        "Loan rate", "loan_rate", batch_inputs, step=0.01
+                                    )
+                                    loan_years = _number(
+                                        "Loan yrs", "loan_years", batch_inputs, step=1, min=1
+                                    )
+                                    loan_rate.bind_enabled_from(use_loan, "value")
+                                    loan_years.bind_enabled_from(use_loan, "value")
 
                             _resolution_section(batch_inputs)
                             _pricing_section(batch_inputs)
