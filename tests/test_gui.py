@@ -280,3 +280,8 @@ class TestExportPrices:
         assert "365 days" in gui._price_cache_status_text(ok)
         down = {"errors": ["download failed"], "fetched": [], "kept": [], "pruned": []}
         assert "unavailable" in gui._price_cache_status_text(down)
+
+
+async def test_batch_financial_has_loan_switch(user):
+    await user.open("/")
+    await user.should_see("Use loan")
