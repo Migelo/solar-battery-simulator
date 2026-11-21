@@ -9,7 +9,7 @@ A Python tool for simulating and optimizing solar photovoltaic (PV) systems with
 - **Multi-scenario batch analysis** - Test hundreds of solar/battery/inverter combinations
 - **Economic analysis** - ROI, NPV, payback periods with time-of-use pricing
 - **Heating load modeling** - Simulate adding heat pump load to existing consumption
-- **Slovenian tariff support** - 5-block transmission costs, OVE-SPTE fees, seasonal pricing
+- **Slovenian tariff support** - 5-block network tariffs per user group from `cenikOmreznin.csv` (or entered manually), OVE-SPTE fees, seasonal pricing
 
 ## Windows: download and double-click
 

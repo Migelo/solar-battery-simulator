@@ -72,10 +72,13 @@ from tqdm import tqdm
 from data_readers import (
     ALIGN_AUTO,
     ALIGN_CALENDAR,
+    DEFAULT_TARIFF_GROUP,
+    NETWORK_TARIFF_FILE,
     SUPPORTED_EXTENSIONS,
     align_export_prices,
     load_consumption,
     load_export_prices,
+    load_network_tariffs,
     load_production,
 )
 
@@ -3183,6 +3186,25 @@ class MultiScenarioAnalyzer:
         print("- multi_scenario_comprehensive_results.xlsx (or .csv)")
 
 
+def _cli_network_tariffs(args) -> tuple[dict[str, float], dict[str, float]]:
+    """(transmission_costs, monthly_power_fees) from --tariff-group or the manual flags."""
+    if args.tariff_group.lower() == "manual":
+        print("Network tariff: manual")
+        return (
+            {f"block{i}": getattr(args, f"transmission_block{i}") for i in range(1, 6)},
+            {f"block{i}": getattr(args, f"power_fee_block{i}") for i in range(1, 6)},
+        )
+    tariffs = load_network_tariffs(args.tariff_file)
+    if args.tariff_group not in tariffs:
+        raise SystemExit(
+            f"User group {args.tariff_group!r} not in {args.tariff_file} "
+            f"(available: {', '.join(tariffs)}, or 'manual')"
+        )
+    print(f"Network tariff: user group {args.tariff_group} from {args.tariff_file}")
+    rates = tariffs[args.tariff_group]
+    return dict(rates["transmission_costs"]), dict(rates["monthly_power_fees"])
+
+
 def main():
     """Main execution function"""
     parser = argparse.ArgumentParser(description="Power Flow Simulator for Solar + Battery Systems")
@@ -3313,7 +3335,24 @@ def main():
         help="Maximum power threshold for Block 5 in kW",
     )
 
-    # Transmission costs
+    # Network tariffs: a user group from the tariff file, or the per-block flags below
+    parser.add_argument(
+        "--tariff-group",
+        type=str,
+        default=DEFAULT_TARIFF_GROUP,
+        help=(
+            f"User group from the network tariff file (default: {DEFAULT_TARIFF_GROUP}); "
+            "'manual' uses --transmission-block* and --power-fee-block*"
+        ),
+    )
+    parser.add_argument(
+        "--tariff-file",
+        type=str,
+        default=NETWORK_TARIFF_FILE,
+        help=f"Network tariff file (default: {NETWORK_TARIFF_FILE})",
+    )
+
+    # Transmission costs (used with --tariff-group manual)
     parser.add_argument(
         "--transmission-block1",
         type=float,
@@ -3569,23 +3608,7 @@ def main():
         inverter_range = parse_range(args.inverter_range)
         battery_range = parse_range(args.battery_range)
 
-        # Create transmission costs dictionary from arguments
-        transmission_costs = {
-            "block1": args.transmission_block1,
-            "block2": args.transmission_block2,
-            "block3": args.transmission_block3,
-            "block4": args.transmission_block4,
-            "block5": args.transmission_block5,
-        }
-
-        # Create monthly power fees dictionary from arguments
-        monthly_power_fees = {
-            "block1": args.power_fee_block1,
-            "block2": args.power_fee_block2,
-            "block3": args.power_fee_block3,
-            "block4": args.power_fee_block4,
-            "block5": args.power_fee_block5,
-        }
+        transmission_costs, monthly_power_fees = _cli_network_tariffs(args)
 
         # Create max power by block dictionary from arguments (only if any values are provided)
         max_power_by_block = {}
@@ -3689,23 +3712,7 @@ def main():
                 f"Heating load: {args.heating_kwh} kWh/season, {args.heating_start_hour}:00-{'midnight' if args.heating_end_hour == 0 else f'{args.heating_end_hour}:00'}"
             )
 
-        # Create transmission costs dictionary from arguments
-        transmission_costs = {
-            "block1": args.transmission_block1,
-            "block2": args.transmission_block2,
-            "block3": args.transmission_block3,
-            "block4": args.transmission_block4,
-            "block5": args.transmission_block5,
-        }
-
-        # Create monthly power fees dictionary from arguments
-        monthly_power_fees = {
-            "block1": args.power_fee_block1,
-            "block2": args.power_fee_block2,
-            "block3": args.power_fee_block3,
-            "block4": args.power_fee_block4,
-            "block5": args.power_fee_block5,
-        }
+        transmission_costs, monthly_power_fees = _cli_network_tariffs(args)
 
         # Initialize simulator
         simulator = PowerFlowSimulator(

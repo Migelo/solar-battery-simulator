@@ -19,6 +19,8 @@ PyInstaller.__main__.run(
         "--clean",
         # NiceGUI serves its static JS/CSS from the package directory.
         f"--add-data={Path(nicegui.__file__).parent}{os.pathsep}nicegui",
+        # Default network tariff table, read when no cenikOmreznin.csv sits next to the exe.
+        f"--add-data=cenikOmreznin.csv{os.pathsep}.",
         # pandas imports the Excel readers lazily, so PyInstaller can't see them.
         "--hidden-import=openpyxl",
         "--hidden-import=xlrd",

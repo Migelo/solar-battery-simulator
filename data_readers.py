@@ -419,3 +419,71 @@ def align_export_prices(
         )
     print(f"Export prices aligned by {used}; {missing} interval(s) gap-filled")
     return aligned.ffill().bfill().astype(float).reset_index(drop=True)
+
+
+# ---------------------------------------------------------------------------
+# Network tariffs (cenik omrežnin)
+# ---------------------------------------------------------------------------
+NETWORK_TARIFF_FILE = "cenikOmreznin.csv"
+DEFAULT_TARIFF_GROUP = "0"
+_TARIFF_GROUP = "skupina"
+_TARIFF_BLOCK = "blok"
+_TARIFF_POWER = "moč"
+_TARIFF_ENERGY = "energij"
+
+
+def _col_containing(df: pd.DataFrame, fragment: str) -> str | None:
+    return next((c for c in df.columns if fragment in _norm(c)), None)
+
+
+def load_network_tariffs(path: str | Path) -> dict[str, dict[str, dict[str, float]]]:
+    """Load a network tariff table: user group x time block -> power and energy rates.
+
+    Columns are matched by name (``Uporabniška skupina``, ``Časovni blok``,
+    ``Tarifna postavka za moč [EUR/kW/mesec]``, ``Tarifna postavka za energijo
+    [EUR/kWh]``), else read positionally in that order. Decimal commas are accepted.
+
+    Returns ``{group: {"transmission_costs": {"block1": EUR/kWh, ...},
+    "monthly_power_fees": {"block1": EUR/kW/month, ...}}}`` with groups in file order.
+
+    Raises:
+        ValueError: If a group does not list all five blocks exactly once.
+    """
+    path = Path(path)
+    df = read_table(path)
+    named = [
+        _col_containing(df, f)
+        for f in (_TARIFF_GROUP, _TARIFF_BLOCK, _TARIFF_POWER, _TARIFF_ENERGY)
+    ]
+    if None in named or len(set(named)) < 4:
+        if len(df.columns) < 4:
+            raise ValueError(
+                f"{path.name}: expected columns user group, time block, power rate, "
+                f"energy rate; got {list(df.columns)}"
+            )
+        named = list(df.columns[:4])
+    group_col, block_col, power_col, energy_col = (str(c) for c in named)
+
+    groups = df[group_col].astype(str).str.strip().str.removesuffix(".0")
+    blocks = _validate_blocks(_to_numeric(df[block_col], block_col, path), path)
+    power = _to_numeric(df[power_col], power_col, path)
+    energy = _to_numeric(df[energy_col], energy_col, path)
+
+    tariffs: dict[str, dict[str, dict[str, float]]] = {}
+    for group in dict.fromkeys(groups):
+        mask = groups == group
+        group_blocks = blocks[mask].tolist()
+        if sorted(group_blocks) != [1, 2, 3, 4, 5]:
+            raise ValueError(
+                f"{path.name}: user group {group} must list blocks 1-5 once each, "
+                f"found {sorted(group_blocks)}"
+            )
+        tariffs[group] = {
+            "transmission_costs": {
+                f"block{b}": float(v) for b, v in zip(group_blocks, energy[mask], strict=True)
+            },
+            "monthly_power_fees": {
+                f"block{b}": float(v) for b, v in zip(group_blocks, power[mask], strict=True)
+            },
+        }
+    return tariffs
