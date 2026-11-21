@@ -221,7 +221,13 @@ class TestPageStructure:
 
     async def test_batch_tab_is_first_and_default(self, user):
         await user.open("/")
-        tabs = [t.props["name"] for t in user.find(ui.tab).elements]
+        # find() returns a set, so read the order from the tab bar's own children
+        tab_bar = next(
+            t
+            for t in user.find(ui.tabs).elements
+            if any(c.props.get("name") == "Batch Analysis" for c in t.default_slot.children)
+        )
+        tabs = [c.props["name"] for c in tab_bar.default_slot.children]
         assert tabs[:2] == ["Batch Analysis", "Single Scenario"]
         await user.should_see("Run Analysis")
         await user.should_not_see("Run Simulation")
