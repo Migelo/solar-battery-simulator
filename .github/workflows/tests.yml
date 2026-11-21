@@ -89,6 +89,40 @@ jobs:
           fail_ci_if_error: false
           use_oidc: true
 
+  windows:
+    runs-on: windows-latest
+    timeout-minutes: 20
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v10.4.0
+        with:
+          version: "latest"
+          enable-cache: true
+
+      - name: Run tests
+        run: uv run --frozen --extra test pytest --tb=short -q
+        env:
+          MPLBACKEND: Agg
+
+      - name: Launcher starts the GUI
+        shell: pwsh
+        env:
+          GUI_OPEN_BROWSER: "0"
+          PRICE_CACHE_AUTO_UPDATE: "0"
+        run: |
+          if ((Get-Content -Raw start_windows.bat) -notmatch "`r`n") { throw "start_windows.bat lost its CRLF line endings" }
+          $p = Start-Process cmd.exe -ArgumentList '/c', 'start_windows.bat' -PassThru -NoNewWindow
+          $ok = $false
+          for ($i = 0; $i -lt 120 -and -not $ok; $i++) {
+            Start-Sleep -Seconds 2
+            try { $ok = (Invoke-WebRequest -UseBasicParsing http://127.0.0.1:8080).StatusCode -eq 200 } catch {}
+          }
+          taskkill /T /F /PID $p.Id | Out-Null
+          if (-not $ok) { throw "GUI did not answer on http://127.0.0.1:8080" }
+
   docker:
     runs-on: ubuntu-latest
     timeout-minutes: 15

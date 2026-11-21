@@ -10,3 +10,6 @@ __pycache__/
 *.jpg
 multi_scenario_comparison.csv
 data/price_cache/
+build/
+dist/
+*.spec

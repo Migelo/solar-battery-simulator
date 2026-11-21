@@ -11,6 +11,22 @@ A Python tool for simulating and optimizing solar photovoltaic (PV) systems with
 - **Heating load modeling** - Simulate adding heat pump load to existing consumption
 - **Slovenian tariff support** - 5-block transmission costs, OVE-SPTE fees, seasonal pricing
 
+## Windows: download and double-click
+
+1. Download **[SolarBatterySimulator.exe](https://github.com/Migelo/solar-battery-simulator/releases/latest/download/SolarBatterySimulator.exe)**
+   and put it in a folder of its own (e.g. `Documents\Solar Simulator`).
+2. Double-click it. Windows may say *"Windows protected your PC"* because the app isn't
+   code-signed: click **More info → Run anyway** (only needed the first time).
+3. Your browser opens the simulator. The first start takes up to a minute; later starts are faster.
+   Keep the black window open while you work; close it to stop the simulator.
+
+Nothing needs to be installed. Put your production and consumption files in a `data` folder
+next to the exe, or upload them in the browser. The simulator only accepts connections from
+the same PC, so no firewall prompt appears and nobody else on your network can open it.
+
+Running from source instead? Double-click `start_windows.bat` (installs [uv](https://docs.astral.sh/uv/)
+on first use).
+
 ## Installation
 
 Requires Python 3.12+ and [uv](https://github.com/astral-sh/uv).

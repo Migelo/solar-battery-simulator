@@ -4,6 +4,7 @@
 import asyncio
 import io
 import os
+import socket
 import tempfile
 from pathlib import Path
 
@@ -1076,11 +1077,34 @@ def index():
                         batch_results = ui.column().classes("w-full")
 
 
-if __name__ in {"__main__", "__mp_main__"}:
+def _pick_port(host: str) -> int:
+    """GUI_PORT if set; else 8080, or a free port when 8080 is taken (e.g. a second launch)."""
+    if "GUI_PORT" in os.environ:
+        return int(os.environ["GUI_PORT"])
+    with socket.socket() as sock:
+        try:
+            sock.bind((host, 8080))
+            return 8080
+        except OSError:
+            pass
+    with socket.socket() as sock:
+        sock.bind((host, 0))
+        return sock.getsockname()[1]
+
+
+def main() -> None:
+    # Localhost only by default: nobody else on the network can connect. The Docker image
+    # sets GUI_HOST=0.0.0.0 inside the container; compose publishes it on 127.0.0.1 only.
+    host = os.environ.get("GUI_HOST", "127.0.0.1")
     ui.run(
         title="Solar Battery Simulator",
-        host="0.0.0.0",
-        port=8080,
+        host=host,
+        port=_pick_port(host),
+        show=os.environ.get("GUI_OPEN_BROWSER", "1") != "0",
         reload=False,
         storage_secret=os.environ.get("NICEGUI_STORAGE_SECRET", "solar-sim-dev-only"),
     )
+
+
+if __name__ in {"__main__", "__mp_main__"}:
+    main()

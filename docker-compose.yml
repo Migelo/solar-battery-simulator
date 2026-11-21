@@ -2,7 +2,7 @@ services:
   simulator:
     build: .
     ports:
-      - "8080:8080"
+      - "127.0.0.1:8080:8080"  # this machine only
     volumes:
       - ./data:/app/data
     environment:
