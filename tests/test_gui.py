@@ -1,11 +1,11 @@
 """Tests for the NiceGUI frontend."""
 
-import io
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
 import pytest
+from nicegui.elements.upload_files import SmallFileUpload
 
 import gui
 from gui import (
@@ -91,9 +91,10 @@ class TestFindDataFile:
 
 
 class _FakeUpload:
+    """Shaped like NiceGUI's UploadEventArguments, with its real FileUpload in ``file``."""
+
     def __init__(self, name: str, content: bytes):
-        self.name = name
-        self.content = io.BytesIO(content)
+        self.file = SmallFileUpload(name=name, content_type="", _data=content)
 
 
 class _FakeLabel:
@@ -106,22 +107,23 @@ class TestHandleUpload:
         monkeypatch.setattr(gui, "_upload_dir", tmp_path)
         return tmp_path
 
-    def test_keeps_uploaded_extension(self, upload_dir):
+    async def test_keeps_uploaded_extension(self, upload_dir):
         label = _FakeLabel()
-        _handle_upload(_FakeUpload("Moj-Elektro.XLSX", b"data"), "consumption.csv", label)
+        upload = _FakeUpload("Moj-Elektro.XLSX", b"data")
+        assert await _handle_upload(upload, "consumption.csv", label)
         assert (upload_dir / "consumption.xlsx").read_bytes() == b"data"
         assert not (upload_dir / "consumption.csv").exists()
-        assert "Moj-Elektro.XLSX" in label.text
+        assert label.text == "consumption: found (Moj-Elektro.XLSX)"
 
-    def test_new_upload_replaces_other_format(self, upload_dir):
+    async def test_new_upload_replaces_other_format(self, upload_dir):
         (upload_dir / "consumption.csv").write_text("old")
-        _handle_upload(_FakeUpload("new.xls", b"new"), "consumption.csv", _FakeLabel())
+        await _handle_upload(_FakeUpload("new.xls", b"new"), "consumption.csv", _FakeLabel())
         assert not (upload_dir / "consumption.csv").exists()
         assert (upload_dir / "consumption.xls").read_bytes() == b"new"
 
-    def test_rejects_unsupported_type(self, upload_dir):
+    async def test_rejects_unsupported_type(self, upload_dir):
         label = _FakeLabel()
-        _handle_upload(_FakeUpload("data.pdf", b"x"), "consumption.csv", label)
+        assert not await _handle_upload(_FakeUpload("data.pdf", b"x"), "consumption.csv", label)
         assert list(upload_dir.iterdir()) == []
         assert "unsupported" in label.text
 
