@@ -218,3 +218,17 @@ class TestMultiScenarioAnalyzer:
         for scenario in analyzer.scenarios:
             for key in required_keys:
                 assert key in scenario
+
+    def test_should_stop_ends_run_early(self, minimal_production_csv, minimal_consumption_csv):
+        """run_all_scenarios stops before the next scenario once should_stop returns True."""
+        analyzer = MultiScenarioAnalyzer(
+            solar_range=[5, 10],
+            inverter_range=[5],
+            battery_range=[0, 10],
+            production_file=str(minimal_production_csv),
+            consumption_file=str(minimal_consumption_csv),
+        )
+        analyzer.generate_scenarios()
+        assert len(analyzer.scenarios) > 1
+        analyzer.run_all_scenarios(should_stop=lambda: len(analyzer.results) >= 1)
+        assert len(analyzer.results) == 1

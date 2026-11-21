@@ -6,6 +6,7 @@ import io
 import os
 import socket
 import tempfile
+import threading
 from pathlib import Path
 
 import matplotlib
@@ -534,8 +535,18 @@ def _metric_card(label: str, value: str):
         ui.label(label).classes("text-caption text-grey-7")
 
 
-async def run_batch_analysis(params: dict, results_container, spinner):
-    """Run batch analysis in a background thread with progress tracking."""
+class _BatchStopped(Exception):
+    """Raised inside the batch worker when the user pressed Stop Analysis."""
+
+
+async def run_batch_analysis(
+    params: dict, results_container, spinner, stop_event: threading.Event | None = None
+):
+    """Run batch analysis in a background thread with progress tracking.
+
+    Setting ``stop_event`` ends the run after the scenario currently simulating.
+    """
+    stop_event = stop_event or threading.Event()
     spinner.visible = True
     results_container.clear()
 
@@ -621,7 +632,9 @@ async def run_batch_analysis(params: dict, results_container, spinner):
         # Store analyzer ref so the timer can poll len(analyzer.results)
         progress["analyzer"] = analyzer
 
-        analyzer.run_all_scenarios()
+        analyzer.run_all_scenarios(should_stop=stop_event.is_set)
+        if stop_event.is_set():
+            raise _BatchStopped
 
         progress["current"] = progress["total"]
         progress["phase"] = "Generating plots"
@@ -736,6 +749,13 @@ async def run_batch_analysis(params: dict, results_container, spinner):
 
     try:
         result = await asyncio.to_thread(_run)
+    except _BatchStopped:
+        timer.deactivate()
+        spinner.visible = False
+        results_container.clear()
+        with results_container:
+            ui.notify("Batch analysis stopped", type="warning")
+        return
     except Exception as e:
         timer.deactivate()
         spinner.visible = False
@@ -1111,8 +1131,8 @@ def index():
 
     with ui.element("div").classes("w-full relative"):
         with ui.tabs().classes("w-full") as tabs:
-            single_tab = ui.tab("Single Scenario")
             batch_tab = ui.tab("Batch Analysis")
+            single_tab = ui.tab("Single Scenario")
 
         def _on_tab(tab):
             """Visibility filter: True while ``tab`` is the selected tab."""
@@ -1130,18 +1150,41 @@ def index():
             ).props("color=primary no-wrap").bind_visibility_from(
                 tabs, "value", backward=_on_tab(single_tab)
             )
-            ui.button(
-                "Run Analysis",
-                icon="play_arrow",
-                on_click=lambda: run_batch_analysis(
-                    build_shared_params(batch_inputs), batch_results, batch_spinner
-                ),
-            ).props("color=primary no-wrap").bind_visibility_from(
+            batch_stop = threading.Event()
+            batch_running = False
+
+            async def _toggle_batch():
+                """Run Analysis, or request a stop while a run is in progress."""
+                nonlocal batch_running
+                if batch_running:
+                    batch_stop.set()
+                    batch_button.set_text("Stopping...")
+                    batch_button.disable()
+                    return
+                batch_running = True
+                batch_stop.clear()
+                batch_button.set_text("Stop Analysis")
+                batch_button.props("icon=stop color=negative")
+                try:
+                    await run_batch_analysis(
+                        build_shared_params(batch_inputs),
+                        batch_results,
+                        batch_spinner,
+                        stop_event=batch_stop,
+                    )
+                finally:
+                    batch_running = False
+                    batch_button.set_text("Run Analysis")
+                    batch_button.props("icon=play_arrow color=primary")
+                    batch_button.enable()
+
+            batch_button = ui.button("Run Analysis", icon="play_arrow", on_click=_toggle_batch)
+            batch_button.props("color=primary no-wrap").bind_visibility_from(
                 tabs, "value", backward=_on_tab(batch_tab)
             )
 
     with (
-        ui.tab_panels(tabs, value=single_tab)
+        ui.tab_panels(tabs, value=batch_tab)
         .classes("w-full")
         .style("min-height: calc(100vh - 130px)")
     ):

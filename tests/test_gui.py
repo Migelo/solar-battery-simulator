@@ -5,6 +5,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 import pytest
+from nicegui import ui
 from nicegui.elements.upload_files import SmallFileUpload
 
 import gui
@@ -218,8 +219,16 @@ class TestPageStructure:
         await user.open("/")
         await user.should_see("Batch Analysis")
 
+    async def test_batch_tab_is_first_and_default(self, user):
+        await user.open("/")
+        tabs = [t.props["name"] for t in user.find(ui.tab).elements]
+        assert tabs[:2] == ["Batch Analysis", "Single Scenario"]
+        await user.should_see("Run Analysis")
+        await user.should_not_see("Run Simulation")
+
     async def test_single_tab_has_system_inputs(self, user):
         await user.open("/")
+        user.find("Single Scenario").click()
         await user.should_see("Configuration")
         await user.should_see("Run Simulation")
 
