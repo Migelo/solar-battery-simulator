@@ -13,7 +13,14 @@ import matplotlib.pyplot as plt
 import pandas as pd
 from nicegui import app, ui
 
-from data_readers import ALIGN_AUTO, ALIGN_CALENDAR, SUPPORTED_EXTENSIONS
+from data_readers import (
+    ALIGN_AUTO,
+    ALIGN_CALENDAR,
+    DEFAULT_TARIFF_GROUP,
+    NETWORK_TARIFF_FILE,
+    SUPPORTED_EXTENSIONS,
+    load_network_tariffs,
+)
 from power_flow_simulator import (
     DEFAULT_REFERENCE_SOLAR_KW,
     MultiScenarioAnalyzer,
@@ -202,6 +209,59 @@ def make_monthly_power_fees(b1, b2, b3, b4, b5):
     return {"block1": b1, "block2": b2, "block3": b3, "block4": b4, "block5": b5}
 
 
+TARIFF_MANUAL = "manual"
+
+
+def _tariff_file() -> Path:
+    """Network tariff file: upload / data/ / cwd, else the copy shipped next to the code."""
+    found = Path(_find_data_file(NETWORK_TARIFF_FILE))
+    if found.exists():
+        return found
+    return Path(__file__).resolve().parent / NETWORK_TARIFF_FILE
+
+
+def _load_tariffs() -> tuple[dict, str | None]:
+    """(tariffs by user group, error text); empty tariffs when the file is missing/invalid."""
+    path = _tariff_file()
+    try:
+        return load_network_tariffs(path), None
+    except (OSError, ValueError) as exc:
+        return {}, f"{path.name}: {exc}"
+
+
+def _tariff_options(tariffs: dict) -> dict[str, str]:
+    options = {group: f"User group {group}" for group in tariffs}
+    options[TARIFF_MANUAL] = "Manual"
+    return options
+
+
+def _default_tariff_group(tariffs: dict) -> str:
+    if DEFAULT_TARIFF_GROUP in tariffs:
+        return DEFAULT_TARIFF_GROUP
+    return next(iter(tariffs), TARIFF_MANUAL)
+
+
+def resolve_network_tariffs(params: dict) -> tuple[dict, dict]:
+    """(transmission_costs, monthly_power_fees) for the selected source.
+
+    A user group is read from the tariff file at run time; ``"manual"`` (or no
+    selection) uses the tb1-5 / pf1-5 inputs.
+    """
+    group = params.get("tariff_group", TARIFF_MANUAL)
+    if group and group != TARIFF_MANUAL:
+        tariffs = load_network_tariffs(_tariff_file())
+        if group not in tariffs:
+            raise ValueError(f"User group {group} not found in {NETWORK_TARIFF_FILE}")
+        return (
+            dict(tariffs[group]["transmission_costs"]),
+            dict(tariffs[group]["monthly_power_fees"]),
+        )
+    return (
+        make_transmission_costs(*(params[f"tb{i}"] for i in range(1, 6))),
+        make_monthly_power_fees(*(params[f"pf{i}"] for i in range(1, 6))),
+    )
+
+
 def fig_to_png_bytes(fig) -> bytes:
     buf = io.BytesIO()
     fig.savefig(
@@ -242,6 +302,7 @@ async def run_single_simulation(params: dict, results_container, spinner):
             }
 
         export_price_file, export_price_alignment = _export_prices(params)
+        transmission_costs, monthly_power_fees = resolve_network_tariffs(params)
         sim = PowerFlowSimulator(
             solar_panel_power_kw=params["solar_power"],
             inverter_power_kw=params["inverter_power"],
@@ -250,12 +311,8 @@ async def run_single_simulation(params: dict, results_container, spinner):
             battery_efficiency=params["battery_efficiency"],
             peak_price=params["peak_price"],
             off_peak_price=params["off_peak_price"],
-            transmission_costs=make_transmission_costs(
-                params["tb1"], params["tb2"], params["tb3"], params["tb4"], params["tb5"]
-            ),
-            monthly_power_fees=make_monthly_power_fees(
-                params["pf1"], params["pf2"], params["pf3"], params["pf4"], params["pf5"]
-            ),
+            transmission_costs=transmission_costs,
+            monthly_power_fees=monthly_power_fees,
             ove_spte_fee=params["ove_spte_fee"],
             enable_power_smoothing=params["enable_power_smoothing"],
             min_soc_reserve=params["min_soc_reserve"],
@@ -494,6 +551,7 @@ async def run_batch_analysis(params: dict, results_container, spinner):
             }
 
         export_price_file, export_price_alignment = _export_prices(params)
+        transmission_costs, monthly_power_fees = resolve_network_tariffs(params)
         analyzer = MultiScenarioAnalyzer(
             solar_range=parse_range(params["solar_range"]),
             inverter_range=parse_range(params["inverter_range"]),
@@ -511,12 +569,8 @@ async def run_batch_analysis(params: dict, results_container, spinner):
             discount_rate=params["discount_rate"],
             loan_rate=params["loan_rate"],
             loan_years=params["loan_years"],
-            transmission_costs=make_transmission_costs(
-                params["tb1"], params["tb2"], params["tb3"], params["tb4"], params["tb5"]
-            ),
-            monthly_power_fees=make_monthly_power_fees(
-                params["pf1"], params["pf2"], params["pf3"], params["pf4"], params["pf5"]
-            ),
+            transmission_costs=transmission_costs,
+            monthly_power_fees=monthly_power_fees,
             ove_spte_fee=params["ove_spte_fee"],
             enable_power_smoothing=params["enable_power_smoothing"],
             min_soc_reserve=params["min_soc_reserve"],
@@ -829,7 +883,18 @@ def _pricing_section(inputs):
 
 
 def _transmission_section(inputs):
+    tariffs, error = _load_tariffs()
     with ui.expansion("Transmission Costs", icon="electrical_services").classes("w-full"):
+        source = ui.select(
+            options=_tariff_options(tariffs),
+            label="Network tariff",
+            value=_default_tariff_group(tariffs),
+        ).classes("w-full")
+        source.tooltip(f"User group rates from {NETWORK_TARIFF_FILE}, or enter them manually")
+        inputs["tariff_group"] = source
+        status = ui.label(error or f"{NETWORK_TARIFF_FILE}: {len(tariffs)} user groups")
+        status.classes("text-caption " + ("text-warning" if error else "text-positive"))
+
         ui.label("Transmission costs (\u20ac/kWh)").classes("text-caption")
         with ui.row().classes("q-gutter-sm"):
             for i in range(1, 6):
@@ -839,6 +904,46 @@ def _transmission_section(inputs):
         with ui.row().classes("q-gutter-sm"):
             for i in range(1, 6):
                 _number(f"Block {i}", f"pf{i}", inputs, step=0.01)
+
+        rate_inputs = [inputs[f"tb{i}"] for i in range(1, 6)] + [
+            inputs[f"pf{i}"] for i in range(1, 6)
+        ]
+
+        def _apply(group) -> None:
+            manual = group == TARIFF_MANUAL or group not in tariffs
+            if not manual:
+                rates = tariffs[group]
+                for i in range(1, 6):
+                    inputs[f"tb{i}"].value = rates["transmission_costs"][f"block{i}"]
+                    inputs[f"pf{i}"].value = rates["monthly_power_fees"][f"block{i}"]
+            for widget in rate_inputs:
+                if manual:
+                    widget.props(remove="readonly")
+                else:
+                    widget.props("readonly")
+
+        def _on_upload(event) -> None:
+            _handle_upload(event, NETWORK_TARIFF_FILE, status)
+            if Path(event.name).suffix.lower() not in SUPPORTED_EXTENSIONS:
+                return
+            new, err = _load_tariffs()
+            tariffs.clear()
+            tariffs.update(new)
+            status.text = err or f"{NETWORK_TARIFF_FILE}: {len(tariffs)} user groups"
+            source.set_options(
+                _tariff_options(tariffs),
+                value=source.value if source.value in tariffs else _default_tariff_group(tariffs),
+            )
+            _apply(source.value)
+
+        ui.upload(
+            label="Replace tariff file",
+            auto_upload=True,
+            on_upload=_on_upload,
+        ).props(f"accept={_ACCEPT} flat dense").classes("max-w-[220px]")
+        source.on_value_change(lambda e: _apply(e.value))
+        _apply(source.value)
+
         ui.separator()
         _number("OVE-SPTE fee", "ove_spte_fee", inputs, step=0.01, suffix="\u20ac/kW/mo")
 

@@ -99,6 +99,8 @@ Each 15-min interval: surplus solar charges battery (respecting C-rate and effic
 
 5-block transmission costs vary by season (high: Nov–Mar, low: Mar–Nov) and workday/time-of-day. Block 1 is most expensive (high season weekday peak hours), Block 3 cheapest. Monthly power fees are charged per kW per block. OVE-SPTE fee uses weighted formula: `4 × Block1_max_power + 8 × Block2_max_power`.
 
+Network tariff rates (energy EUR/kWh + power EUR/kW/month per block) default to **`cenikOmreznin.csv`** (repo root; columns `Uporabniška skupina;Časovni blok;Tarifna postavka za moč [EUR/kW/mesec];Tarifna postavka za energijo [EUR/kWh]`, decimal commas; CSV/XLSX/XLS accepted, columns matched by name else positional). Parsed by `data_readers.load_network_tariffs()`; default user group `DEFAULT_TARIFF_GROUP = "0"`. GUI: "Network tariff" dropdown in Transmission Costs (user groups from the file + "Manual"; a group fills the block inputs read-only, resolved again at run time by `resolve_network_tariffs()`; "Replace tariff file" upload). Lookup: upload → `data/` → cwd → copy next to `gui.py` (bundled in the exe via `build_exe.py`, copied by the Dockerfile). CLI: `--tariff-group` (default 0, `manual` = `--transmission-block*`/`--power-fee-block*`), `--tariff-file`. Tests: `tests/test_network_tariffs.py`.
+
 ## Input Data
 
 Two input files required, each CSV, XLSX/XLSM (openpyxl) or XLS (xlrd). Parsing lives in **`data_readers.py`** (`read_table`, `load_production`, `load_consumption`, `load_export_prices`, `align_export_prices`); `load_and_align_data()` only calls it.
@@ -114,7 +116,7 @@ Both files exist in the repository root and are auto-detected by the GUI.
 
 ## Docker Deployment
 
-`docker compose up --build` builds and runs the GUI on port 8080. Place the production and consumption files (CSV or Excel) in a `data/` directory — it is volume-mounted into the container at `/app/data`. The `Dockerfile` uses uv and copies only `pyproject.toml`, `uv.lock`, `data_readers.py`, `power_flow_simulator.py`, `price_cache.py`, and `gui.py` — add any new top-level module there.
+`docker compose up --build` builds and runs the GUI on port 8080. Place the production and consumption files (CSV or Excel) in a `data/` directory — it is volume-mounted into the container at `/app/data`. The `Dockerfile` uses uv and copies only `pyproject.toml`, `uv.lock`, `data_readers.py`, `power_flow_simulator.py`, `price_cache.py`, `gui.py` and `cenikOmreznin.csv` — add any new top-level module there.
 
 ## Code Quality
 
