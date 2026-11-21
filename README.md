@@ -80,6 +80,8 @@ Exported energy is paid either a **fixed price** (default, `--export-price` €/
 - CLI: `--export-pricing market` updates the cache and uses it; `uv run price_cache.py` only updates it.
 - Docker: the cache lives in the mounted `data/` directory, so it survives restarts.
 
+**Export fee.** `--export-fee` (GUI: *Export fee*, €/MWh, default 0) is deducted from every exported MWh in both fixed and market pricing — e.g. a supplier's margin on spot prices.
+
 **Own price file.** `--export-price-file` (overrides `--export-price` and the cache), or upload it in the GUI. Own files are matched by exact timestamp when they cover the consumption dates, otherwise by month/day/time.
 
 Accepted price files (CSV/XLSX/XLS):
@@ -117,6 +119,7 @@ uv run hupx_prices.py --start 2026-10-01 --end 2026-10-31 --out data/export_pric
 | `--off-peak-price` | 0.107 | Off-peak electricity (€/kWh) |
 | `--export-price` | 0.01 | Fixed export price (€/kWh) |
 | `--export-price-file` | – | Market export prices (HUPX download or `timestamp,price`) |
+| `--export-fee` | 0 | Fee deducted per exported MWh (€/MWh), fixed or market pricing |
 | `--export-pricing` | fixed | `fixed` or `market` (last-365-days SI day-ahead cache) |
 
 See `uv run power_flow_simulator.py --help` for all options.

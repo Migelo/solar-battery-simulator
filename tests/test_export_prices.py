@@ -155,7 +155,7 @@ def sunny_production_csv(tmp_path):
     return path
 
 
-def _run(prod, cons, resolution="15min", export_price_file=None, export_price=0.0):
+def _run(prod, cons, resolution="15min", export_price_file=None, export_price=0.0, fee=0.0):
     sim = PowerFlowSimulator(
         solar_panel_power_kw=20.0,
         inverter_power_kw=20.0,
@@ -164,11 +164,57 @@ def _run(prod, cons, resolution="15min", export_price_file=None, export_price=0.
         consumption_file=str(cons),
         time_resolution=resolution,
         export_price_file=str(export_price_file) if export_price_file else None,
+        export_fee_eur_mwh=fee,
     )
     sim.load_and_align_data()
     sim.scale_solar_generation()
     sim.simulate_power_flows()
     return sim, sim.calculate_costs_and_savings(export_price=export_price)
+
+
+@pytest.mark.parametrize("market", [False, True])
+def test_export_fee_deducted_per_mwh(
+    tmp_path, sunny_production_csv, minimal_consumption_csv, market
+):
+    prices = _price_file(tmp_path, np.linspace(-20.0, 200.0, 96)) if market else None
+    _, base = _run(
+        sunny_production_csv, minimal_consumption_csv, export_price_file=prices, export_price=0.07
+    )
+    _, fee = _run(
+        sunny_production_csv,
+        minimal_consumption_csv,
+        export_price_file=prices,
+        export_price=0.07,
+        fee=12.5,
+    )
+    deduction = base["export_kwh"] / 1000.0 * 12.5
+    assert base["export_fee_cost"] == 0.0
+    assert fee["export_fee_cost"] == pytest.approx(deduction)
+    assert fee["export_revenue"] == pytest.approx(base["export_revenue"] - deduction)
+    assert fee["avg_export_price"] == pytest.approx(base["avg_export_price"] - 0.0125)
+    assert fee["solar_battery_cost"] == pytest.approx(base["solar_battery_cost"] + deduction)
+
+
+def test_export_fee_reaches_batch_simulation(sunny_production_csv, minimal_consumption_csv):
+    from power_flow_simulator import MultiScenarioAnalyzer
+
+    def savings(fee):
+        analyzer = MultiScenarioAnalyzer(
+            solar_range=[20.0],
+            inverter_range=[20.0],
+            battery_range=[0.0],
+            production_file=str(sunny_production_csv),
+            consumption_file=str(minimal_consumption_csv),
+            export_fee_eur_mwh=fee,
+        )
+        return analyzer._cached_batch_simulation(20.0, 20.0, 0.0, 0.0, 0.0, 0.9, 0.15, 0.1, 0.05)
+
+    no_fee, with_fee = savings(0.0), savings(50.0)
+    exported = no_fee["simulation_results"]["grid_export_kwh"].sum()
+    assert exported > 0
+    assert with_fee["cost_analysis"]["export_revenue"] == pytest.approx(
+        no_fee["cost_analysis"]["export_revenue"] - exported / 1000.0 * 50.0
+    )
 
 
 def test_constant_market_price_matches_fixed(
