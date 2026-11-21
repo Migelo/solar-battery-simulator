@@ -249,6 +249,7 @@ async def run_single_simulation(params: dict, results_container, spinner):
             consumption_file=params.get("consumption_file", _find_data_file("consumption.csv")),
             export_price_file=export_price_file,
             export_price_alignment=export_price_alignment,
+            export_fee_eur_mwh=params.get("export_fee", 0.0),
         )
 
         sim.load_and_align_data()
@@ -508,6 +509,7 @@ async def run_batch_analysis(params: dict, results_container, spinner):
             consumption_file=params.get("consumption_file", _find_data_file("consumption.csv")),
             export_price_file=export_price_file,
             export_price_alignment=export_price_alignment,
+            export_fee_eur_mwh=params.get("export_fee", 0.0),
         )
 
         progress["phase"] = "Generating scenarios"
@@ -702,6 +704,7 @@ DEFAULTS = {
     "peak_price": 0.14683,
     "off_peak_price": 0.10664,
     "export_price": 0.01,
+    "export_fee": 0.0,
     "export_price_mode": EXPORT_MODE_FIXED,
     "tb1": 0.01282,
     "tb2": 0.01216,
@@ -780,6 +783,9 @@ def _pricing_section(inputs):
         inputs["export_price_mode"] = mode
         fixed = _number("Export price", "export_price", inputs, step=0.001, suffix="\u20ac/kWh")
         fixed.bind_visibility_from(mode, "value", value=EXPORT_MODE_FIXED)
+        _number("Export fee", "export_fee", inputs, step=0.5, suffix="\u20ac/MWh").tooltip(
+            "Deducted from every exported MWh (fixed or market price)"
+        )
         with ui.column().classes("w-full gap-1") as market:
             found = _find_data_file(EXPORT_PRICES_NAME)
             ui.label(

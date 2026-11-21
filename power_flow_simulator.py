@@ -251,6 +251,7 @@ class PowerFlowSimulator:
         export_price_file: str | None = None,
         price_region: str = "SI",
         export_price_alignment: str = ALIGN_AUTO,
+        export_fee_eur_mwh: float = 0.0,
     ):
         """
         Initialize the power flow simulator
@@ -282,6 +283,8 @@ class PowerFlowSimulator:
             export_price_alignment (str): "auto" (exact timestamps when the prices cover
                 the simulated dates, else month/day/time) or "calendar" (always
                 month/day/time — used with the rolling last-year price cache).
+            export_fee_eur_mwh (float): Fee deducted from every exported MWh (EUR/MWh),
+                in both fixed and market pricing (e.g. a supplier's spot margin).
         """
         # System specifications
         self.solar_panel_power_kw = solar_panel_power_kw
@@ -308,6 +311,7 @@ class PowerFlowSimulator:
         self.export_price_file = export_price_file or None
         self.price_region = price_region
         self.export_price_alignment = export_price_alignment
+        self.export_fee_eur_mwh = export_fee_eur_mwh
 
         # Transmission costs (EUR/kWh) - 5 blocks (1=most expensive, 3=cheapest)
         if transmission_costs is None:
@@ -1051,6 +1055,8 @@ class PowerFlowSimulator:
             print(f"Export price: market prices from {self.export_price_file}")
         else:
             print(f"Export price: €{export_price:.3f}/kWh")
+        if self.export_fee_eur_mwh:
+            print(f"Export fee: €{self.export_fee_eur_mwh:.2f}/MWh")
 
         # Calculate costs with battery system using transmission block pricing
         def get_transmission_cost(row):
@@ -1087,6 +1093,9 @@ class PowerFlowSimulator:
             )
         else:
             export_revenue = total_export_kwh * export_price
+        # Fee per exported MWh (e.g. supplier margin on spot prices), net of revenue
+        export_fee_cost = total_export_kwh * self.export_fee_eur_mwh / 1000.0
+        export_revenue -= export_fee_cost
         avg_export_price = export_revenue / total_export_kwh if total_export_kwh > 0 else 0.0
 
         # Calculate block-wise max power for monthly fees
@@ -1161,6 +1170,7 @@ class PowerFlowSimulator:
             "solar_battery_cost": net_cost_battery,
             "savings_vs_baseline": savings_vs_baseline,
             "export_revenue": export_revenue,
+            "export_fee_cost": export_fee_cost,
             "export_kwh": total_export_kwh,
             "avg_export_price": avg_export_price,
         }
@@ -1511,6 +1521,7 @@ def _cached_batch_simulation_func(
     input_fingerprint: str = "",  # noqa: ARG001 - cache key only
     export_price_file: str | None = None,
     export_price_alignment: str = ALIGN_AUTO,
+    export_fee_eur_mwh: float = 0.0,
 ) -> dict[str, Any]:
     """
     Standalone cached simulation function for batch mode to avoid re-running identical simulations.
@@ -1567,6 +1578,7 @@ def _cached_batch_simulation_func(
                 time_resolution=time_resolution,
                 export_price_file=export_price_file,
                 export_price_alignment=export_price_alignment,
+                export_fee_eur_mwh=export_fee_eur_mwh,
             )
 
             # Run simulation
@@ -1703,6 +1715,7 @@ class MultiScenarioAnalyzer:
         time_resolution: str = "15min",
         export_price_file: str | None = None,
         export_price_alignment: str = ALIGN_AUTO,
+        export_fee_eur_mwh: float = 0.0,
     ):
         """
         Multi-scenario analyzer for solar + battery systems
@@ -1732,6 +1745,7 @@ class MultiScenarioAnalyzer:
             time_resolution (str): Simulation bin width: "15min" or "1h"
             export_price_file (str): Optional market price file; overrides export_price
             export_price_alignment (str): "auto" or "calendar", see PowerFlowSimulator
+            export_fee_eur_mwh (float): Fee deducted per exported MWh (EUR/MWh)
         """
         self.solar_range = solar_range or [5, 8.5, 10, 15, 20]
         self.inverter_range = inverter_range or [5, 8, 10, 15]
@@ -1743,6 +1757,7 @@ class MultiScenarioAnalyzer:
         self.export_price = export_price
         self.export_price_file = export_price_file or None
         self.export_price_alignment = export_price_alignment
+        self.export_fee_eur_mwh = export_fee_eur_mwh
         self.solar_cost_per_kw = solar_cost_per_kw
         self.inverter_cost_per_kw = inverter_cost_per_kw
         self.battery_cost_per_kwh = battery_cost_per_kwh
@@ -1890,6 +1905,7 @@ class MultiScenarioAnalyzer:
             ),
             export_price_file=self.export_price_file,
             export_price_alignment=self.export_price_alignment,
+            export_fee_eur_mwh=self.export_fee_eur_mwh,
         )
 
     def run_all_scenarios(self) -> list[dict[str, Any]]:
@@ -2828,6 +2844,7 @@ class MultiScenarioAnalyzer:
                     ),
                     export_price_file=self.export_price_file,
                     export_price_alignment=self.export_price_alignment,
+                    export_fee_eur_mwh=self.export_fee_eur_mwh,
                 )
 
                 if result["simulation_failed"]:
@@ -3219,6 +3236,13 @@ def main():
         "overrides --export-price. Fetch recent data with hupx_prices.py",
     )
     parser.add_argument(
+        "--export-fee",
+        type=float,
+        default=0.0,
+        help="Fee deducted from every exported MWh in EUR/MWh, fixed or market pricing "
+        "(default: 0)",
+    )
+    parser.add_argument(
         "--export-pricing",
         choices=["fixed", "market"],
         default="fixed",
@@ -3603,6 +3627,7 @@ def main():
             time_resolution=args.time_resolution,
             export_price_file=args.export_price_file,
             export_price_alignment=export_price_alignment,
+            export_fee_eur_mwh=args.export_fee,
             production_file=args.production_file,
             consumption_file=args.consumption_file,
         )
@@ -3715,6 +3740,7 @@ def main():
             time_resolution=args.time_resolution,
             export_price_file=args.export_price_file,
             export_price_alignment=export_price_alignment,
+            export_fee_eur_mwh=args.export_fee,
             production_file=args.production_file,
             consumption_file=args.consumption_file,
         )
