@@ -1114,7 +1114,7 @@ def index():
                                 .classes("w-full")
                                 .props("dense")
                             ):
-                                with ui.grid(columns=2).classes("w-full gap-1"):
+                                with ui.grid(columns=1).classes("w-full gap-1"):
                                     _number(
                                         "Solar",
                                         "solar_cost_per_kw",
