@@ -81,11 +81,13 @@ def _handle_upload(event, target_name: str, label_widget) -> None:
     label_widget.text = f"{stem}: {event.name}"
 
 
-def _data_files_section(inputs):
+def _data_files_section(inputs, shared):
     """Create file upload section — collapsed when files are already found.
 
     Also holds the reference capacity of the production file (registered in ``inputs``),
-    since it describes that file rather than the simulated system.
+    since it describes that file rather than the simulated system. The production file is
+    shared by both tabs, so the reference value is bound to the page-level ``shared`` dict
+    and every tab's input shows (and runs with) the same number.
     """
     prod_found = _find_data_file("production.csv")
     cons_found = _find_data_file("consumption.csv")
@@ -112,9 +114,9 @@ def _data_files_section(inputs):
             ).props(f"accept={_ACCEPT} flat dense").classes("max-w-[180px]")
             _number(
                 "Reference power", "reference_solar_kw", inputs, step=0.1, min=0.1, suffix="kWp"
-            ).classes("w-36").tooltip(
-                "Installed capacity of the plant that recorded the production file; "
-                "generation is scaled from it to the simulated solar size"
+            ).classes("w-36").bind_value(shared, "reference_solar_kw").tooltip(
+                "Installed capacity of the plant that recorded the production file "
+                "(shared by both tabs); generation is scaled from it to the simulated solar size"
             )
 
         with ui.row().classes("w-full q-gutter-sm items-center"):
@@ -866,6 +868,8 @@ def _heating_section(inputs):
 # ---------------------------------------------------------------------------
 @ui.page("/")
 def index():
+    # Per-client values shared by both tabs (inputs describing the shared data files)
+    shared = {"reference_solar_kw": DEFAULTS["reference_solar_kw"]}
     app.storage.user.setdefault("dark_mode", True)
     ui.dark_mode().bind_value(app.storage.user, "dark_mode")
 
@@ -910,7 +914,7 @@ def index():
                                     ),
                                 ).props("color=primary dense")
 
-                            _data_files_section(single_inputs)
+                            _data_files_section(single_inputs, shared)
 
                             with (
                                 ui.expansion("System Specs", icon="solar_power", value=True)
@@ -979,7 +983,7 @@ def index():
                                     ),
                                 ).props("color=primary dense no-wrap")
 
-                            _data_files_section(batch_inputs)
+                            _data_files_section(batch_inputs, shared)
 
                             with (
                                 ui.expansion("Parameter Ranges", icon="grid_view", value=True)

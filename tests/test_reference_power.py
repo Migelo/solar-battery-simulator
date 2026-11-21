@@ -99,3 +99,22 @@ def test_gui_default():
 async def test_gui_shows_reference_input(user):
     await user.open("/")
     await user.should_see("Reference power")
+
+
+async def test_gui_reference_shared_between_tabs(user):
+    """The production file is shared, so both tabs' reference inputs must hold one value."""
+    import asyncio
+
+    from nicegui import ui
+
+    await user.open("/")
+    numbers = [
+        n for n in user.find(kind=ui.number).elements if n.props.get("label") == "Reference power"
+    ]
+    assert len(numbers) == 2
+    numbers[0].value = 50.0
+    for _ in range(20):  # dict bindings propagate on NiceGUI's refresh loop
+        if numbers[1].value == 50.0:
+            break
+        await asyncio.sleep(0.05)
+    assert numbers[1].value == 50.0
