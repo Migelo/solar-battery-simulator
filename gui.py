@@ -50,6 +50,16 @@ _ACCEPT = ",".join(SUPPORTED_EXTENSIONS)
 
 # Persistent temp dir for uploaded files (lives for the process lifetime)
 _upload_dir = Path(tempfile.mkdtemp(prefix="solar_sim_"))
+# Original filename of each upload, by saved stem (e.g. "production" -> "my_pv.xlsx")
+_upload_names: dict[str, str] = {}
+
+
+def _display_name(path: str) -> str:
+    """Short name for a data file: the original upload name, else the path as given."""
+    p = Path(path)
+    if p.parent == _upload_dir:
+        return _upload_names.get(p.stem, p.name)
+    return path
 
 
 def _candidate_names(name: str) -> list[str]:
@@ -72,21 +82,26 @@ def _find_data_file(name: str) -> str:
     return str(Path("data") / name)
 
 
-def _handle_upload(event, target_name: str, label_widget) -> None:
-    """Save an uploaded file under ``target_name``'s stem, keeping its own extension."""
-    ext = Path(event.name).suffix.lower()
+async def _handle_upload(event, target_name: str, label_widget) -> bool:
+    """Save an uploaded file under ``target_name``'s stem, keeping its own extension.
+
+    ``event`` is NiceGUI's ``UploadEventArguments`` (file in ``event.file``). Returns
+    whether the file was saved (False for an unsupported type).
+    """
+    name = event.file.name
+    ext = Path(name).suffix.lower()
     if ext not in SUPPORTED_EXTENSIONS:
-        label_widget.text = (
-            f"{event.name}: unsupported type (use {', '.join(SUPPORTED_EXTENSIONS)})"
-        )
-        return
+        label_widget.text = f"{name}: unsupported type (use {', '.join(SUPPORTED_EXTENSIONS)})"
+        return False
     stem = Path(target_name).stem
     # Remove earlier uploads of this input in other formats so they can't shadow it.
     for old_ext in SUPPORTED_EXTENSIONS:
         (_upload_dir / f"{stem}{old_ext}").unlink(missing_ok=True)
     dest = _upload_dir / f"{stem}{ext}"
-    dest.write_bytes(event.content.read())
-    label_widget.text = f"{stem}: {event.name}"
+    dest.write_bytes(await event.file.read())
+    _upload_names[stem] = name
+    label_widget.text = f"{stem}: found ({name})"
+    return True
 
 
 def _data_files_section(inputs, shared):
@@ -95,30 +110,46 @@ def _data_files_section(inputs, shared):
     Also holds the reference capacity of the production file (registered in ``inputs``),
     since it describes that file rather than the simulated system. The production file is
     shared by both tabs, so the reference value is bound to the page-level ``shared`` dict
-    and every tab's input shows (and runs with) the same number.
+    and every tab's input shows (and runs with) the same number. Likewise an upload in
+    one tab refreshes the file status of every tab (``shared["file_status"]``).
     """
-    prod_found = _find_data_file("production.csv")
-    cons_found = _find_data_file("consumption.csv")
-    prod_exists = Path(prod_found).exists()
-    cons_exists = Path(cons_found).exists()
-    both_found = prod_exists and cons_exists
 
-    with ui.expansion("Data Files", icon="folder_open", value=not both_found).classes("w-full"):
-        if both_found:
-            ui.label(f"Using: {prod_found}, {cons_found}").classes("text-caption text-positive")
+    def found(name: str) -> str | None:
+        path = _find_data_file(name)
+        return path if Path(path).exists() else None
+
+    def refresh() -> None:
+        prod, cons = found("production.csv"), found("consumption.csv")
+        if prod and cons:
+            summary.text = f"Using: {_display_name(prod)}, {_display_name(cons)}"
+            summary.classes(replace="text-caption text-positive")
         else:
-            ui.label("Upload production and consumption files (CSV, XLSX or XLS)").classes(
-                "text-caption text-warning"
+            summary.text = "Upload production and consumption files (CSV, XLSX or XLS)"
+            summary.classes(replace="text-caption text-warning")
+        for label, stem, path in (
+            (prod_label, "production", prod),
+            (cons_label, "consumption", cons),
+        ):
+            uploaded = path and Path(path).parent == _upload_dir
+            label.text = f"{stem}: " + (
+                f"found ({_display_name(path)})" if uploaded else "found" if path else "missing"
             )
+
+    async def on_upload(event, target_name: str, label_widget) -> None:
+        if await _handle_upload(event, target_name, label_widget):
+            for update in shared["file_status"]:
+                update()
+
+    both_found = bool(found("production.csv") and found("consumption.csv"))
+    with ui.expansion("Data Files", icon="folder_open", value=not both_found).classes("w-full"):
+        summary = ui.label()
 
         with ui.row().classes("w-full q-gutter-sm items-center"):
-            prod_label = ui.label(f"production: {'found' if prod_exists else 'missing'}").classes(
-                "text-caption"
-            )
+            prod_label = ui.label().classes("text-caption")
             ui.upload(
                 label="Upload",
                 auto_upload=True,
-                on_upload=lambda e: _handle_upload(e, "production.csv", prod_label),
+                on_upload=lambda e: on_upload(e, "production.csv", prod_label),
             ).props(f"accept={_ACCEPT} flat dense").classes("max-w-[180px]")
             _number(
                 "Reference power", "reference_solar_kw", inputs, step=0.1, min=0.1, suffix="kWp"
@@ -128,14 +159,15 @@ def _data_files_section(inputs, shared):
             )
 
         with ui.row().classes("w-full q-gutter-sm items-center"):
-            cons_label = ui.label(f"consumption: {'found' if cons_exists else 'missing'}").classes(
-                "text-caption"
-            )
+            cons_label = ui.label().classes("text-caption")
             ui.upload(
                 label="Upload",
                 auto_upload=True,
-                on_upload=lambda e: _handle_upload(e, "consumption.csv", cons_label),
+                on_upload=lambda e: on_upload(e, "consumption.csv", cons_label),
             ).props(f"accept={_ACCEPT} flat dense").classes("max-w-[180px]")
+
+    shared.setdefault("file_status", []).append(refresh)
+    refresh()
 
 
 EXPORT_MODE_FIXED = "Fixed price"
@@ -915,9 +947,8 @@ def _transmission_section(inputs):
                 else:
                     widget.props("readonly")
 
-        def _on_upload(event) -> None:
-            _handle_upload(event, NETWORK_TARIFF_FILE, status)
-            if Path(event.name).suffix.lower() not in SUPPORTED_EXTENSIONS:
+        async def _on_upload(event) -> None:
+            if not await _handle_upload(event, NETWORK_TARIFF_FILE, status):
                 return
             new, err = _load_tariffs()
             tariffs.clear()
@@ -971,6 +1002,21 @@ def index():
     shared = {"reference_solar_kw": DEFAULTS["reference_solar_kw"]}
     app.storage.user.setdefault("dark_mode", True)
     ui.dark_mode().bind_value(app.storage.user, "dark_mode")
+    # Sidebar sections: outlined boxes with bold titles; hide the uploader's empty file list
+    ui.add_css(
+        """
+        .q-uploader__list:empty { display: none; }
+        .q-expansion-item {
+            border: 1px solid rgba(128, 128, 128, 0.35);
+            border-radius: 6px;
+            margin-bottom: 6px;
+        }
+        .q-expansion-item > .q-expansion-item__container > .q-item { font-weight: 700; }
+        .q-expansion-item--expanded > .q-expansion-item__container > .q-item {
+            border-bottom: 1px solid rgba(128, 128, 128, 0.35);
+        }
+        """
+    )
 
     with ui.header().classes("items-center justify-between"):
         ui.label("Solar Battery Simulator").classes("text-h5 text-weight-bold")
@@ -978,9 +1024,36 @@ def index():
             "keep-color color=grey-6"
         )
 
-    with ui.tabs().classes("w-full") as tabs:
-        single_tab = ui.tab("Single Scenario")
-        batch_tab = ui.tab("Batch Analysis")
+    with ui.element("div").classes("w-full relative"):
+        with ui.tabs().classes("w-full") as tabs:
+            single_tab = ui.tab("Single Scenario")
+            batch_tab = ui.tab("Batch Analysis")
+
+        def _on_tab(tab):
+            """Visibility filter: True while ``tab`` is the selected tab."""
+            name = tab.props["name"]
+            return lambda v: (v.props["name"] if isinstance(v, ui.tab) else v) == name
+
+        # Run button of the selected tab, right-aligned in the tab bar
+        with ui.row().classes("absolute-right items-center q-pr-md"):
+            ui.button(
+                "Run Simulation",
+                icon="play_arrow",
+                on_click=lambda: run_single_simulation(
+                    build_shared_params(single_inputs), single_results, single_spinner
+                ),
+            ).props("color=primary no-wrap").bind_visibility_from(
+                tabs, "value", backward=_on_tab(single_tab)
+            )
+            ui.button(
+                "Run Analysis",
+                icon="play_arrow",
+                on_click=lambda: run_batch_analysis(
+                    build_shared_params(batch_inputs), batch_results, batch_spinner
+                ),
+            ).props("color=primary no-wrap").bind_visibility_from(
+                tabs, "value", backward=_on_tab(batch_tab)
+            )
 
     with (
         ui.tab_panels(tabs, value=single_tab)
@@ -1001,17 +1074,7 @@ def index():
                 with splitter.before:
                     with ui.scroll_area().classes("w-full").style("height: calc(100vh - 170px)"):
                         with ui.column().classes("q-gutter-xs p-2 w-full"):
-                            with ui.row().classes("w-full items-center justify-between"):
-                                ui.label("Configuration").classes("text-h6")
-                                ui.button(
-                                    "Run Simulation",
-                                    icon="play_arrow",
-                                    on_click=lambda: run_single_simulation(
-                                        build_shared_params(single_inputs),
-                                        single_results,
-                                        single_spinner,
-                                    ),
-                                ).props("color=primary dense")
+                            ui.label("Configuration").classes("text-h6")
 
                             _data_files_section(single_inputs, shared)
 
@@ -1020,7 +1083,7 @@ def index():
                                 .classes("w-full")
                                 .props("dense")
                             ):
-                                with ui.grid(columns=3).classes("w-full gap-1"):
+                                with ui.grid(columns=1).classes("w-full gap-1"):
                                     _number(
                                         "Solar", "solar_power", single_inputs, step=0.5, suffix="kW"
                                     )
@@ -1038,7 +1101,6 @@ def index():
                                         step=1,
                                         suffix="kWh",
                                     )
-                                with ui.grid(columns=2).classes("w-full gap-1"):
                                     _number("C-rate", "battery_c_rate", single_inputs, step=0.1)
                                     _number(
                                         "Efficiency", "battery_efficiency", single_inputs, step=0.05
@@ -1069,17 +1131,7 @@ def index():
                 with splitter.before:
                     with ui.scroll_area().classes("w-full").style("height: calc(100vh - 170px)"):
                         with ui.column().classes("q-gutter-xs p-2 w-full"):
-                            with ui.row().classes("w-full items-center justify-between"):
-                                ui.label("Configuration").classes("text-h6")
-                                ui.button(
-                                    "Run Analysis",
-                                    icon="play_arrow",
-                                    on_click=lambda: run_batch_analysis(
-                                        build_shared_params(batch_inputs),
-                                        batch_results,
-                                        batch_spinner,
-                                    ),
-                                ).props("color=primary dense no-wrap")
+                            ui.label("Configuration").classes("text-h6")
 
                             _data_files_section(batch_inputs, shared)
 
