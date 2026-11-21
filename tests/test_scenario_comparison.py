@@ -89,5 +89,15 @@ def test_xlsx_numeric_with_number_formats(batch_results):
     cell = ws.cell(row=2, column=col)
     assert isinstance(cell.value, float)
     assert cell.value == pytest.approx(df.iloc[0]["Imported (kWh)"])
-    assert cell.number_format == "#,##0"
-    assert ws.cell(row=2, column=headers.index("Payback (yr)") + 1).number_format == "#,##0.0"
+    assert cell.number_format == "[$-424]#,##0"
+    assert ws.cell(row=2, column=headers.index("Payback (yr)") + 1).number_format == (
+        "[$-424]#,##0.0"
+    )
+    # Percent stored as a fraction in a Slovenian "45,3 %" format
+    pct = ws.cell(row=2, column=headers.index("Self-Suff (%)") + 1)
+    assert pct.number_format == "[$-424]0.0\\ %"
+    assert pct.value == pytest.approx(df.iloc[0]["Self-Suff (%)"] / 100)
+    assert wb.properties.language == "sl-SI"
+    # Every data cell carries the Slovenian locale tag
+    for row in ws.iter_rows(min_row=2):
+        assert all(c.number_format.startswith("[$-424]") for c in row)
