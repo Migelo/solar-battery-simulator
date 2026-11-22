@@ -2,26 +2,23 @@
 
 ## Running Scripts
 
-Use `uv run` to execute Python scripts:
+Use `uv run` with the installed commands:
 
 ```bash
-# Power flow simulator (recommended)
-uv run power_flow_simulator.py
-
-# Battery simulator (legacy)
-uv run battery_simulator.py
+uv run solar-gui   # web GUI
+uv run solar-sim   # simulator CLI
 ```
 
 ## Power Flow Simulator Examples
 
 ### Single Scenario
 ```bash
-uv run power_flow_simulator.py --solar-power 15.0 --battery-capacity 20.0
+uv run solar-sim --solar-power 15.0 --battery-capacity 20.0
 ```
 
 ### Batch Analysis
 ```bash
-uv run power_flow_simulator.py --batch-mode \
+uv run solar-sim --batch-mode \
   --solar-range 10,15,20 --battery-range 0,10,20 \
   --electricity-price 0.15 --export-price 0.0
 ```
@@ -30,18 +27,18 @@ uv run power_flow_simulator.py --batch-mode \
 Pay exports the SI day-ahead price of each interval (last 365 days, cached in
 `data/price_cache/` and refreshed on each run) instead of the fixed price:
 ```bash
-uv run power_flow_simulator.py --solar-power 15 --battery-capacity 20 --export-pricing market
+uv run solar-sim --solar-power 15 --battery-capacity 20 --export-pricing market
 ```
 Or use your own price file (e.g. a HUPX download):
 ```bash
-uv run power_flow_simulator.py --solar-power 15 --battery-capacity 20 \
+uv run solar-sim --solar-power 15 --battery-capacity 20 \
   --export-price-file data/Labs_DAM_Aggregated_Trading_Data_15min.xlsx
 ```
 
 ### With Heating Load
 Model adding a heat pump with 4000 kWh/season consumption:
 ```bash
-uv run power_flow_simulator.py --batch-mode \
+uv run solar-sim --batch-mode \
   --solar-range 10,15,20 --battery-range 10,15,20 \
   --add-heating-load --heating-kwh 4000
 ```
@@ -54,5 +51,5 @@ uv run power_flow_simulator.py --batch-mode \
 
 ## Help
 ```bash
-uv run power_flow_simulator.py --help
+uv run solar-sim --help
 ```

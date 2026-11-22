@@ -18,22 +18,28 @@ import matplotlib
 import pandas as pd
 from nicegui import app, ui
 
-from data_readers import (
+from solar_battery_simulator.data_readers import (
     ALIGN_AUTO,
     ALIGN_CALENDAR,
+    BUNDLED_TARIFF_FILE,
     DEFAULT_TARIFF_GROUP,
     NETWORK_TARIFF_FILE,
     SUPPORTED_EXTENSIONS,
     load_network_tariffs,
 )
-from power_flow_simulator import (
+from solar_battery_simulator.price_cache import (
+    DEFAULT_CACHE_DIR,
+    cached_price_file,
+    market_price_file,
+    update_price_cache,
+)
+from solar_battery_simulator.simulator import (
     BATTERY_SUBSIDY_BASES,
     DEFAULT_REFERENCE_SOLAR_KW,
     MultiScenarioAnalyzer,
     PowerFlowSimulator,
     SubsidyConfig,
 )
-from price_cache import DEFAULT_CACHE_DIR, cached_price_file, market_price_file, update_price_cache
 
 # Headless backend: the simulator may draw figures from worker threads
 matplotlib.use("Agg")
@@ -236,7 +242,7 @@ def _tariff_file() -> Path:
     found = Path(_find_data_file(NETWORK_TARIFF_FILE))
     if found.exists():
         return found
-    return Path(__file__).resolve().parent / NETWORK_TARIFF_FILE
+    return BUNDLED_TARIFF_FILE
 
 
 def _load_tariffs() -> tuple[dict, str | None]:

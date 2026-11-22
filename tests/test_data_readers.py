@@ -7,13 +7,13 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from data_readers import (
+from solar_battery_simulator.data_readers import (
     detect_consumption_format,
     load_consumption,
     load_production,
     read_table,
 )
-from power_flow_simulator import PowerFlowSimulator
+from solar_battery_simulator.simulator import PowerFlowSimulator
 
 FIXTURES = Path(__file__).parent / "fixtures"
 

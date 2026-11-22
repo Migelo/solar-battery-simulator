@@ -425,6 +425,17 @@ def align_export_prices(
 # Network tariffs (cenik omrežnin)
 # ---------------------------------------------------------------------------
 NETWORK_TARIFF_FILE = "cenikOmreznin.csv"
+BUNDLED_TARIFF_FILE = Path(__file__).resolve().parent / NETWORK_TARIFF_FILE  # shipped default
+
+
+def default_tariff_file() -> Path:
+    """Tariff file in ``data/`` or the working directory, else the copy shipped in the package."""
+    for candidate in (Path("data") / NETWORK_TARIFF_FILE, Path(NETWORK_TARIFF_FILE)):
+        if candidate.exists():
+            return candidate
+    return BUNDLED_TARIFF_FILE
+
+
 DEFAULT_TARIFF_GROUP = "0"
 _TARIFF_GROUP = "skupina"
 _TARIFF_BLOCK = "blok"

@@ -6,9 +6,9 @@ import numpy as np
 import pandas as pd
 import pytest
 
-import price_cache
-from data_readers import load_export_prices
-from price_cache import COMBINED_NAME, fetch_prices, update_price_cache
+from solar_battery_simulator import price_cache
+from solar_battery_simulator.data_readers import load_export_prices
+from solar_battery_simulator.price_cache import COMBINED_NAME, fetch_prices, update_price_cache
 
 TZ = "Europe/Ljubljana"
 
@@ -124,7 +124,7 @@ def test_fetch_expands_hourly_and_handles_dst():
 @pytest.mark.usefixtures("api")
 def test_combined_file_feeds_simulator_alignment(tmp_path):
     """A 2025/26 rolling window aligns onto 2024 consumption by calendar position."""
-    from data_readers import align_export_prices
+    from solar_battery_simulator.data_readers import align_export_prices
 
     update_price_cache(tmp_path, today=dt.date(2026, 11, 21))
     ends = pd.Series(pd.date_range("2024-01-01 00:15", "2025-01-01 00:00", freq="15min"))

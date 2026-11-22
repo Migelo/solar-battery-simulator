@@ -3,7 +3,7 @@ rem Double-click to start the Solar Battery Simulator in your browser.
 rem First run: installs uv (and through it Python + dependencies) - needs internet, a few minutes.
 setlocal
 title Solar Battery Simulator
-cd /d "%~dp0"
+cd /d "%~dp0.."
 
 set "PATH=%USERPROFILE%\.local\bin;%USERPROFILE%\.cargo\bin;%PATH%"
 where uv >nul 2>nul
@@ -25,7 +25,7 @@ echo.
 echo Starting the simulator - your browser will open in a moment.
 echo Keep this window open while you use it; close it to stop the simulator.
 echo.
-uv run --frozen gui.py
+uv run --frozen solar-gui
 if errorlevel 1 (
     echo.
     echo The simulator stopped with an error ^(see above^).

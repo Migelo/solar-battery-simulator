@@ -8,16 +8,22 @@ from types import SimpleNamespace
 import pandas as pd
 import pytest
 
-import gui
-from data_readers import DEFAULT_TARIFF_GROUP, NETWORK_TARIFF_FILE, load_network_tariffs
-from power_flow_simulator import (
+from solar_battery_simulator import gui
+from solar_battery_simulator.data_readers import (
+    DEFAULT_TARIFF_GROUP,
+    NETWORK_TARIFF_FILE,
+    load_network_tariffs,
+)
+from solar_battery_simulator.simulator import (
     MANUAL_POWER_FEE_DEFAULTS,
     MANUAL_TRANSMISSION_DEFAULTS,
     _cli_network_tariffs,
     _manual_tariff_flags_error,
 )
 
-REPO_TARIFFS = Path(__file__).parent.parent / NETWORK_TARIFF_FILE
+REPO_TARIFFS = (
+    Path(__file__).parent.parent / "src" / "solar_battery_simulator" / NETWORK_TARIFF_FILE
+)
 BLOCKS = [f"block{i}" for i in range(1, 6)]
 
 
@@ -190,8 +196,13 @@ class TestManualTariffFlags:
 
     def test_cli_rejects_flag_without_manual(self):
         result = subprocess.run(
-            [sys.executable, "power_flow_simulator.py", "--transmission-block1", "0.02"],
-            cwd=REPO_TARIFFS.parent,
+            [
+                sys.executable,
+                "-m",
+                "solar_battery_simulator.simulator",
+                "--transmission-block1",
+                "0.02",
+            ],
             capture_output=True,
             text=True,
         )

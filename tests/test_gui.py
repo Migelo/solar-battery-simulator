@@ -8,8 +8,8 @@ import pytest
 from nicegui import ui
 from nicegui.elements.upload_files import SmallFileUpload
 
-import gui
-from gui import (
+from solar_battery_simulator import gui
+from solar_battery_simulator.gui import (
     DEFAULTS,
     _find_data_file,
     _handle_upload,
@@ -279,7 +279,7 @@ class TestExportPrices:
         assert alignment == gui.ALIGN_CALENDAR
 
     def test_no_cache_and_offline_raises(self, tmp_path, monkeypatch):
-        import price_cache
+        from solar_battery_simulator import price_cache
 
         monkeypatch.chdir(tmp_path)
         monkeypatch.setattr(gui, "_upload_dir", tmp_path / "uploads")

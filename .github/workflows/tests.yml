@@ -34,7 +34,7 @@ jobs:
       - name: Type-check input readers
         run: >
           uvx --with pandas-stubs --with types-seaborn mypy==1.18.2
-          --ignore-missing-imports --no-strict-optional data_readers.py
+          --ignore-missing-imports --no-strict-optional src/solar_battery_simulator/data_readers.py
 
   test:
     runs-on: ubuntu-latest
@@ -66,14 +66,14 @@ jobs:
 
       - name: Run tests with coverage
         run: >
-          uv run --frozen pytest --tb=short -q --cov=.
+          uv run --frozen pytest --tb=short -q --cov=solar_battery_simulator
           --cov-report=xml:coverage.xml
         env:
           UV_PYTHON: ${{ matrix.python-version }}
 
       - name: CLI smoke test with XLS inputs
         run: >
-          uv run --frozen python power_flow_simulator.py
+          uv run --frozen solar-sim
           --production-file tests/fixtures/production.xls
           --consumption-file tests/fixtures/smart_meter.xls
           --solar-power 5 --inverter-power 5 --battery-capacity 5
@@ -113,8 +113,8 @@ jobs:
           GUI_OPEN_BROWSER: "0"
           PRICE_CACHE_AUTO_UPDATE: "0"
         run: |
-          if ((Get-Content -Raw start_windows.bat) -notmatch "`r`n") { throw "start_windows.bat lost its CRLF line endings" }
-          $p = Start-Process cmd.exe -ArgumentList '/c', 'start_windows.bat' -PassThru -NoNewWindow
+          if ((Get-Content -Raw windows\start_windows.bat) -notmatch "`r`n") { throw "start_windows.bat lost its CRLF line endings" }
+          $p = Start-Process cmd.exe -ArgumentList '/c', 'windows\start_windows.bat' -PassThru -NoNewWindow
           $ok = $false
           for ($i = 0; $i -lt 120 -and -not $ok; $i++) {
             Start-Sleep -Seconds 2
@@ -145,7 +145,7 @@ jobs:
         run: >
           docker run --rm -v "$PWD/tests/fixtures:/fixtures:ro"
           solar-battery-simulator:ci uv run --no-sync python -c
-          "import gui, data_readers as d;
+          "from solar_battery_simulator import gui, data_readers as d;
           print(d.load_consumption('/fixtures/smart_meter.xls').shape,
           d.load_production('/fixtures/production.xls').shape)"
 

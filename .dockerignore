@@ -8,7 +8,7 @@ tests/
 *.png
 *.csv
 !data/*.csv
-!cenikOmreznin.csv
+!src/solar_battery_simulator/cenikOmreznin.csv
 .pre-commit-config.yaml
 .mypy_cache/
 .ruff_cache/

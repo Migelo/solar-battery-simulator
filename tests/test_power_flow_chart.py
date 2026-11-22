@@ -2,7 +2,12 @@
 
 import pandas as pd
 
-from gui import power_flow_chart_options, power_flow_days, power_flow_range, zoom_dates
+from solar_battery_simulator.gui import (
+    power_flow_chart_options,
+    power_flow_days,
+    power_flow_range,
+    zoom_dates,
+)
 
 # Interval-end labels of one year: 2024-01-01 00:15 .. 2025-01-01 00:00
 FIRST = pd.Timestamp("2024-01-01 00:15")
@@ -92,7 +97,7 @@ class TestChartOptions:
             assert opts["dataZoom"][0]["endValue"] == "2024-01-11 00:00"
 
     def test_default_reads_module_constant_at_call_time(self, monkeypatch):
-        import gui
+        from solar_battery_simulator import gui
 
         monkeypatch.setattr(gui, "POWER_FLOW_INITIAL_DAYS", 7)
         opts = power_flow_chart_options(_results(), kw_factor=4)

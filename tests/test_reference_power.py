@@ -2,8 +2,8 @@
 
 import pytest
 
-import gui
-from power_flow_simulator import (
+from solar_battery_simulator import gui
+from solar_battery_simulator.simulator import (
     DEFAULT_REFERENCE_SOLAR_KW,
     MultiScenarioAnalyzer,
     PowerFlowSimulator,
@@ -70,7 +70,7 @@ def test_reference_reaches_batch_simulation(sunny_production_csv, minimal_consum
 
 
 def test_cli_flag(monkeypatch):
-    import power_flow_simulator
+    from solar_battery_simulator import simulator
 
     captured = {}
 
@@ -81,14 +81,14 @@ def test_cli_flag(monkeypatch):
         captured.update(kwargs)
         raise Stop
 
-    monkeypatch.setattr(power_flow_simulator.PowerFlowSimulator, "__init__", fake_init)
+    monkeypatch.setattr(simulator.PowerFlowSimulator, "__init__", fake_init)
     for argv, expected in [
         ([], DEFAULT_REFERENCE_SOLAR_KW),
         (["--reference-solar-power", "100"], 100.0),
     ]:
-        monkeypatch.setattr("sys.argv", ["power_flow_simulator.py", *argv])
+        monkeypatch.setattr("sys.argv", ["solar-sim", *argv])
         with pytest.raises(Stop):
-            power_flow_simulator.main()
+            simulator.main()
         assert captured["reference_solar_kw"] == expected
 
 

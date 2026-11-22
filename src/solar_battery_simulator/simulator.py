@@ -35,10 +35,10 @@ Output Files Generated:
 
 Usage Examples:
     Single scenario analysis:
-        $ python3 power_flow_simulator.py --solar-power 15.0 --battery-capacity 20.0
+        $ uv run solar-sim --solar-power 15.0 --battery-capacity 20.0
 
     Batch analysis:
-        $ python3 power_flow_simulator.py --batch-mode \
+        $ uv run solar-sim --batch-mode \
           --solar-range 10,15,20 --battery-range 0,10,20 \
           --electricity-price 0.15 --export-price 0.0
 
@@ -71,13 +71,14 @@ from joblib import Memory
 from scipy.optimize import differential_evolution
 from tqdm import tqdm
 
-from data_readers import (
+from solar_battery_simulator.data_readers import (
     ALIGN_AUTO,
     ALIGN_CALENDAR,
     DEFAULT_TARIFF_GROUP,
     NETWORK_TARIFF_FILE,
     SUPPORTED_EXTENSIONS,
     align_export_prices,
+    default_tariff_file,
     load_consumption,
     load_export_prices,
     load_network_tariffs,
@@ -320,8 +321,8 @@ class PowerFlowSimulator:
         battery_discharge_power_kw: float = None,
         battery_c_rate: float = 0.5,
         battery_efficiency: float = 0.9,
-        production_file: str = "production.csv",
-        consumption_file: str = "consumption.csv",
+        production_file: str = "data/production.csv",
+        consumption_file: str = "data/consumption.csv",
         transmission_costs: dict[str, float] = None,
         monthly_power_fees: dict[str, float] = None,
         ove_spte_fee: float = 3.44078,
@@ -1763,8 +1764,8 @@ class MultiScenarioAnalyzer:
         discount_rate: float = 0.05,
         loan_rate: float = 0.03,
         loan_years: int = 10,
-        production_file: str = "production.csv",
-        consumption_file: str = "consumption.csv",
+        production_file: str = "data/production.csv",
+        consumption_file: str = "data/consumption.csv",
         transmission_costs: dict[str, float] = None,
         monthly_power_fees: dict[str, float] = None,
         ove_spte_fee: float = 3.44078,
@@ -3308,6 +3309,8 @@ def _cli_network_tariffs(args) -> tuple[dict[str, float], dict[str, float]]:
             {f"block{i}": getattr(args, f"transmission_block{i}") for i in range(1, 6)},
             {f"block{i}": getattr(args, f"power_fee_block{i}") for i in range(1, 6)},
         )
+    if args.tariff_file is None:
+        args.tariff_file = default_tariff_file()
     tariffs = load_network_tariffs(args.tariff_file)
     if args.tariff_group not in tariffs:
         raise SystemExit(
@@ -3392,7 +3395,7 @@ def main():
         "--export-price-file",
         default=None,
         help="Market export prices (HUPX DAM download, or timestamp,price CSV in EUR/MWh); "
-        "overrides --export-price. Fetch recent data with hupx_prices.py",
+        "overrides --export-price. Fetch recent data with solar-hupx-prices",
     )
     parser.add_argument(
         "--export-fee",
@@ -3472,8 +3475,9 @@ def main():
     parser.add_argument(
         "--tariff-file",
         type=str,
-        default=NETWORK_TARIFF_FILE,
-        help=f"Network tariff file (default: {NETWORK_TARIFF_FILE})",
+        default=None,
+        help=f"Network tariff file (default: {NETWORK_TARIFF_FILE} in data/ or the working "
+        "directory, else the bundled copy)",
     )
 
     # Transmission costs (used with --tariff-group manual)
@@ -3716,9 +3720,9 @@ def main():
 
     parser.add_argument(
         "--production-file",
-        default="production.csv",
+        default="data/production.csv",
         help="Solar production baseline file: "
-        f"{', '.join(SUPPORTED_EXTENSIONS)} (default: production.csv)",
+        f"{', '.join(SUPPORTED_EXTENSIONS)} (default: data/production.csv)",
     )
     parser.add_argument(
         "--reference-solar-power",
@@ -3729,9 +3733,9 @@ def main():
     )
     parser.add_argument(
         "--consumption-file",
-        default="consumption.csv",
+        default="data/consumption.csv",
         help="Consumption file, legacy layout or smart-meter export: "
-        f"{', '.join(SUPPORTED_EXTENSIONS)} (default: consumption.csv)",
+        f"{', '.join(SUPPORTED_EXTENSIONS)} (default: data/consumption.csv)",
     )
     args = parser.parse_args()
     if tariff_error := _manual_tariff_flags_error(args):
@@ -3742,7 +3746,7 @@ def main():
     if args.export_price_file:
         pass
     elif args.export_pricing == "market":
-        from price_cache import market_price_file
+        from solar_battery_simulator.price_cache import market_price_file
 
         try:
             args.export_price_file = market_price_file()

@@ -6,14 +6,14 @@ import openpyxl
 import pandas as pd
 import pytest
 
-from gui import (
+from solar_battery_simulator.gui import (
     COMPARISON_COLUMNS,
     comparison_csv_bytes,
     comparison_dataframe,
     comparison_table_rows,
     comparison_xlsx_bytes,
 )
-from power_flow_simulator import MultiScenarioAnalyzer
+from solar_battery_simulator.simulator import MultiScenarioAnalyzer
 
 NEW_COLUMNS = [
     "Solar produced (kWh)",

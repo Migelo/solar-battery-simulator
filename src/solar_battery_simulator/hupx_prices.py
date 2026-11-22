@@ -12,7 +12,7 @@ history, download the CSV from the HUPX Labs website while signed in and pass th
 to the simulator directly — it reads the HUPX download format as-is.
 
 Example:
-    uv run hupx_prices.py --start 2026-10-01 --end 2026-10-31 --out data/export_prices.csv
+    uv run solar-hupx-prices --start 2026-10-01 --end 2026-10-31 --out data/export_prices.csv
 """
 
 from __future__ import annotations
@@ -26,7 +26,7 @@ import urllib.request
 
 import pandas as pd
 
-from data_readers import hupx_rows_to_prices
+from solar_battery_simulator.data_readers import hupx_rows_to_prices
 
 API_BASE = "https://labs.hupx.hu/data/v1"
 HOURLY_DATASET = "dam_aggregated_trading_data"

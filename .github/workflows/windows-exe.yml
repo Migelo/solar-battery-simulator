@@ -29,7 +29,7 @@ jobs:
           enable-cache: true
 
       - name: Build SolarBatterySimulator.exe
-        run: uv run --frozen --python 3.13 --with pyinstaller==6.22.3 python build_exe.py
+        run: uv run --frozen --python 3.13 --with pyinstaller==6.22.3 python windows/build_exe.py
 
       - name: Smoke test the exe from a clean folder
         shell: pwsh
