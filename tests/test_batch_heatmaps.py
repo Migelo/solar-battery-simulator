@@ -59,9 +59,9 @@ def test_chart_options_cells_labels_and_tooltip():
     data = opts["series"][0]["data"]
     assert len(data) == 4
     never = next(d for d in data if d["value"][:2] == [0, 1])
-    assert never["label"]["formatter"] == "20.0+"
+    assert never["label"]["formatter"] == "{main|20.0+}\n{inv|5 kW}"
     assert "Best inverter: 5 kW" in never["name"]
-    assert (opts["visualMap"]["min"], opts["visualMap"]["max"]) == (0, PAYBACK_CAP_YEARS)
+    assert (opts["visualMap"]["min"], opts["visualMap"]["max"]) == (5.0, PAYBACK_CAP_YEARS)
     assert opts["toolbox"]["feature"]["saveAsImage"]["name"] == "batch_payback"
 
 

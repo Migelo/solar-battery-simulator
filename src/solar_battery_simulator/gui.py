@@ -815,12 +815,13 @@ def _fmt_value(spec: HeatmapSpec, value: float, capped: bool) -> str:
 
 
 def heatmap_chart_options(grid: pd.DataFrame, spec: HeatmapSpec) -> dict:
-    """ECharts heatmap: solar on x, battery on y, colour + label = best value, rich tooltip."""
+    """ECharts heatmap: solar on x, battery on y; each cell shows best value + inverter."""
     solars = sorted(grid["solar_kw"].unique())
     batteries = sorted(grid["battery_kwh"].unique())
     data = []
     for row in grid.itertuples():
         label = _fmt_value(spec, row.value, row.capped)
+        inverter = f"{_fmt_kw(row.inverter_kw)} kW"
         data.append(
             {
                 "value": [
@@ -830,14 +831,14 @@ def heatmap_chart_options(grid: pd.DataFrame, spec: HeatmapSpec) -> dict:
                 ],
                 "name": (
                     f"Solar {_fmt_kw(row.solar_kw)} kW · Battery {_fmt_kw(row.battery_kwh)} kWh"
-                    f"<br>Best inverter: {_fmt_kw(row.inverter_kw)} kW"
+                    f"<br>Best inverter: {inverter}"
                     f"<br><b>{spec.title}: {label} {spec.unit}</b>"
                 ),
-                "label": {"formatter": label},
+                "label": {"formatter": f"{{main|{label}}}\n{{inv|{inverter}}}"},
             }
         )
-    lo = 0 if spec.cap is not None else float(grid["value"].min()) if len(grid) else 0
-    hi = spec.cap if spec.cap is not None else float(grid["value"].max()) if len(grid) else 1
+    lo = float(grid["value"].min()) if len(grid) else 0
+    hi = float(grid["value"].max()) if len(grid) else 1
     axis_style = {
         "axisLabel": {"color": "#9e9e9e"},
         "axisLine": {"lineStyle": {"color": "#757575"}},
@@ -903,6 +904,23 @@ def heatmap_chart_options(grid: pd.DataFrame, spec: HeatmapSpec) -> dict:
                     "textBorderColor": "rgba(0,0,0,0.7)",
                     "textBorderWidth": 2,
                     "fontSize": 11,
+                    "lineHeight": 14,
+                    "rich": {
+                        "main": {
+                            "fontSize": 11,
+                            "lineHeight": 14,
+                            "color": "#fff",
+                            "textBorderColor": "rgba(0,0,0,0.7)",
+                            "textBorderWidth": 2,
+                        },
+                        "inv": {
+                            "fontSize": 10,
+                            "lineHeight": 13,
+                            "color": "#e0e0e0",
+                            "textBorderColor": "rgba(0,0,0,0.7)",
+                            "textBorderWidth": 2,
+                        },
+                    },
                 },
                 "itemStyle": {"borderColor": _PLOT_BG, "borderWidth": 1},
                 "emphasis": {"itemStyle": {"borderColor": "#fff", "borderWidth": 2}},
@@ -949,7 +967,7 @@ ScenarioPick = Callable[[tuple[float, float, float], bool], Awaitable[None] | No
 
 def _heatmap_height(grid: pd.DataFrame) -> int:
     rows = max(grid["battery_kwh"].nunique(), 1)
-    return max(360, min(900, 34 * rows + 140))
+    return max(360, min(900, 42 * rows + 150))
 
 
 def _batch_heatmap(

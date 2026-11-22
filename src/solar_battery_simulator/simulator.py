@@ -2284,6 +2284,15 @@ class MultiScenarioAnalyzer:
             aggfunc="min",  # Take minimum payback time if multiple inverter sizes
         )
 
+        # Auto-scale the colorbar to the data so narrow ranges keep contrast
+        # (values are already capped at 20 years above).
+        roi_min = pivot_data.min().min()
+        roi_max = pivot_data.max().max()
+        if pd.isna(roi_min) or pd.isna(roi_max):
+            roi_min, roi_max = 0, 20
+        elif roi_min == roi_max:
+            roi_min -= 0.5
+            roi_max += 0.5
         # Create heatmap with reversed colormap (green = good ROI, red = poor ROI)
         plt.figure(figsize=(12, 8))
         sns.heatmap(
@@ -2291,8 +2300,8 @@ class MultiScenarioAnalyzer:
             annot=True,
             fmt=".1f",
             cmap="RdYlGn_r",
-            vmin=0,
-            vmax=20,
+            vmin=roi_min,
+            vmax=roi_max,
             cbar_kws={"label": "Payback Period (Years)"},
         )
 
@@ -2332,6 +2341,14 @@ class MultiScenarioAnalyzer:
             aggfunc="max",  # Take maximum self-sufficiency if multiple inverter sizes
         )
 
+        # Auto-scale the colorbar to the data so narrow ranges keep contrast.
+        ss_min = pivot_data.min().min()
+        ss_max = pivot_data.max().max()
+        if pd.isna(ss_min) or pd.isna(ss_max):
+            ss_min, ss_max = 0, 100
+        elif ss_min == ss_max:
+            ss_min -= 0.5
+            ss_max += 0.5
         # Create heatmap
         plt.figure(figsize=(12, 8))
         sns.heatmap(
@@ -2339,8 +2356,8 @@ class MultiScenarioAnalyzer:
             annot=True,
             fmt=".1f",
             cmap="plasma",
-            vmin=0,
-            vmax=100,
+            vmin=ss_min,
+            vmax=ss_max,
             cbar_kws={"label": "Self-Sufficiency (%)"},
         )
 
