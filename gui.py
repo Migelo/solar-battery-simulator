@@ -12,6 +12,7 @@ import threading
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 import matplotlib
 import pandas as pd
@@ -472,17 +473,26 @@ def power_flow_range(
     """
     day = pd.Timedelta(days=1)
     s, e = sorted((pd.Timestamp(start).normalize(), pd.Timestamp(end).normalize()))
-    begin = min(max(s, first), last - day)
+    begin = max(first, min(s, last - day))  # at least one day shown, never before the data
     stop = min(e + day, last)
     if stop <= begin:
         stop = min(begin + day, last)
     return begin.strftime(_CHART_TIME_FMT), stop.strftime(_CHART_TIME_FMT)
 
 
+_DEFAULT_DAYS: Any = object()  # sentinel: read POWER_FLOW_INITIAL_DAYS at call time
+
+
 def power_flow_chart_options(
-    results: pd.DataFrame, kw_factor: float, initial_days: int | None = POWER_FLOW_INITIAL_DAYS
+    results: pd.DataFrame, kw_factor: float, initial_days: int | None = _DEFAULT_DAYS
 ) -> dict:
-    """ECharts options for the full-period power flow plot (power, SOC, grid; linked zoom)."""
+    """ECharts options for the full-period power flow plot (power, SOC, grid; linked zoom).
+
+    ``initial_days`` (default ``POWER_FLOW_INITIAL_DAYS``) is the opening span from the first
+    day; ``None`` or ``<= 0`` opens on the whole period.
+    """
+    if initial_days is _DEFAULT_DAYS:
+        initial_days = POWER_FLOW_INITIAL_DAYS
     times = pd.to_datetime(results["datetime"])
     values = pd.DataFrame(
         {
@@ -496,7 +506,11 @@ def power_flow_chart_options(
     values.insert(0, "time", times.dt.strftime(_CHART_TIME_FMT))
     first, last = times.min(), times.max()
     first_day, last_day = power_flow_days(first, last)
-    end_day = last_day if initial_days is None else first_day + pd.Timedelta(days=initial_days - 1)
+    end_day = (
+        last_day
+        if initial_days is None or initial_days <= 0
+        else first_day + pd.Timedelta(days=initial_days - 1)
+    )
     zoom = power_flow_range(str(first_day.date()), str(end_day.date()), first, last)
 
     def series(name, dim, color, grid, area=True):
@@ -672,7 +686,7 @@ def _power_flow_chart(options: dict) -> None:
         ui.button(icon="chevron_right", on_click=lambda: shift(1)).props(
             "flat round dense"
         ).tooltip("Next period of the same length")
-        ui.button("Whole year", icon="zoom_out_map", on_click=whole_period).props(
+        ui.button("Whole period", icon="zoom_out_map", on_click=whole_period).props(
             "flat dense no-caps"
         )
         ui.label("Scroll / drag on the chart or use the slider to zoom").classes(
@@ -687,6 +701,8 @@ def _power_flow_chart(options: dict) -> None:
         if dates and dates != (start_input.value, end_input.value):
             set_dates(*dates)
 
+    # Toolbox "restore" resets the zoom to the opening range without a datazoom event
+    chart.on("chart:restore", lambda _: set_dates(init_start, init_end))
     chart.on(
         "chart:datazoom",
         follow_zoom,

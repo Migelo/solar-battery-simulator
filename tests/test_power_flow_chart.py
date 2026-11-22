@@ -55,6 +55,13 @@ class TestRange:
             "2025-01-01 00:00",
         )
 
+    def test_less_than_a_day_of_data_starts_at_first_point(self):
+        first, last = pd.Timestamp("2024-01-01 00:15"), pd.Timestamp("2024-01-01 12:00")
+        assert power_flow_range("2024-01-01", "2024-01-01", first, last) == (
+            "2024-01-01 00:15",
+            "2024-01-01 12:00",
+        )
+
 
 class TestChartOptions:
     def test_contains_every_interval(self):
@@ -77,6 +84,19 @@ class TestChartOptions:
             assert dz["xAxisIndex"] == [0, 1, 2]
             assert dz["startValue"] == "2024-01-01 00:15"
             assert dz["endValue"] == "2024-01-08 00:00"
+
+    def test_non_positive_initial_days_is_whole_period(self):
+        for days in (0, -3):
+            opts = power_flow_chart_options(_results(), kw_factor=4, initial_days=days)
+            assert opts["dataZoom"][0]["startValue"] == "2024-01-01 00:15"
+            assert opts["dataZoom"][0]["endValue"] == "2024-01-11 00:00"
+
+    def test_default_reads_module_constant_at_call_time(self, monkeypatch):
+        import gui
+
+        monkeypatch.setattr(gui, "POWER_FLOW_INITIAL_DAYS", 7)
+        opts = power_flow_chart_options(_results(), kw_factor=4)
+        assert opts["dataZoom"][0]["endValue"] == "2024-01-08 00:00"
 
 
 class TestZoomDates:
