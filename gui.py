@@ -1262,9 +1262,11 @@ DEFAULTS = {
     "heating_start_hour": 7,
     "heating_end_hour": 0,
     # Batch-specific
-    "solar_range": "5,8.5,10,15,20",
-    "inverter_range": "5,8,10,15",
-    "battery_range": "0,10,15,20",
+    # Sized for the bundled data (a site drawing ~100-300 kW): smaller PV never has surplus,
+    # so the battery would never charge. 6 solar/inverter pairs x 3 batteries = 18 scenarios.
+    "solar_range": "200,400,600",
+    "inverter_range": "150,300,450",
+    "battery_range": "0,250,500",
     "solar_cost_per_kw": 450.0,
     "inverter_cost_per_kw": 130.0,
     "battery_cost_per_kwh": 250.0,

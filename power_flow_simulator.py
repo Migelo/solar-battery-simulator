@@ -3555,20 +3555,20 @@ def main():
     parser.add_argument(
         "--solar-range",
         type=str,
-        default="5,8.5,10,15,20",
-        help="Solar panel capacities to test in kW (comma-separated, default: 5,8.5,10,15,20)",
+        default="200,400,600",
+        help="Solar panel capacities to test in kW (comma-separated, default: 200,400,600)",
     )
     parser.add_argument(
         "--inverter-range",
         type=str,
-        default="5,8,10,15",
-        help="Inverter powers to test in kW (comma-separated, default: 5,8,10,15)",
+        default="150,300,450",
+        help="Inverter powers to test in kW (comma-separated, default: 150,300,450)",
     )
     parser.add_argument(
         "--battery-range",
         type=str,
-        default="0,10,15,20",
-        help='Battery capacities to test in kWh (comma-separated, default: "0,10,15,20")',
+        default="0,250,500",
+        help='Battery capacities to test in kWh (comma-separated, default: "0,250,500")',
     )
 
     # Equipment costs for ROI analysis
