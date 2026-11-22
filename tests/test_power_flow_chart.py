@@ -64,8 +64,15 @@ class TestChartOptions:
         assert len(src) == len(r)
         assert src[0] == ["2024-01-01 00:15", 4.0, 8.0, 50.0, 4.0, -2.0]
 
-    def test_default_zoom_is_first_week_linked_across_panels(self):
+    def test_default_zoom_is_whole_period_linked_across_panels(self):
         opts = power_flow_chart_options(_results(), kw_factor=4)
+        for dz in opts["dataZoom"]:
+            assert dz["xAxisIndex"] == [0, 1, 2]
+            assert dz["startValue"] == "2024-01-01 00:15"
+            assert dz["endValue"] == "2024-01-11 00:00"
+
+    def test_initial_days_limits_zoom_to_first_week(self):
+        opts = power_flow_chart_options(_results(), kw_factor=4, initial_days=7)
         for dz in opts["dataZoom"]:
             assert dz["xAxisIndex"] == [0, 1, 2]
             assert dz["startValue"] == "2024-01-01 00:15"
