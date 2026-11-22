@@ -435,8 +435,9 @@ async def run_single_simulation(params: dict, results_container, spinner):
             ui.table(columns=columns, rows=rows).classes("q-mt-sm")
 
 
-# Days shown when the power flow chart first opens (the user picks start/end dates after)
-POWER_FLOW_INITIAL_DAYS = 7
+# Days shown when the power flow chart first opens; None = the whole period (yearly overview).
+# The user narrows it with the start/end dates or by zooming.
+POWER_FLOW_INITIAL_DAYS: int | None = None
 _CHART_TIME_FMT = "%Y-%m-%d %H:%M"
 # ECharts cascading time-axis labels (picked by tick granularity)
 _TIME_LABELS = {
@@ -479,7 +480,7 @@ def power_flow_range(
 
 
 def power_flow_chart_options(
-    results: pd.DataFrame, kw_factor: float, initial_days: int = POWER_FLOW_INITIAL_DAYS
+    results: pd.DataFrame, kw_factor: float, initial_days: int | None = POWER_FLOW_INITIAL_DAYS
 ) -> dict:
     """ECharts options for the full-period power flow plot (power, SOC, grid; linked zoom)."""
     times = pd.to_datetime(results["datetime"])
@@ -494,13 +495,9 @@ def power_flow_chart_options(
     ).round(2)
     values.insert(0, "time", times.dt.strftime(_CHART_TIME_FMT))
     first, last = times.min(), times.max()
-    first_day = power_flow_days(first, last)[0]
-    zoom = power_flow_range(
-        str(first_day.date()),
-        str((first_day + pd.Timedelta(days=initial_days - 1)).date()),
-        first,
-        last,
-    )
+    first_day, last_day = power_flow_days(first, last)
+    end_day = last_day if initial_days is None else first_day + pd.Timedelta(days=initial_days - 1)
+    zoom = power_flow_range(str(first_day.date()), str(end_day.date()), first, last)
 
     def series(name, dim, color, grid, area=True):
         return {
