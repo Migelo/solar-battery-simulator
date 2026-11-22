@@ -12,7 +12,6 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import matplotlib
-import matplotlib.pyplot as plt
 import pandas as pd
 from nicegui import app, ui
 
@@ -33,23 +32,8 @@ from power_flow_simulator import (
 )
 from price_cache import DEFAULT_CACHE_DIR, cached_price_file, market_price_file, update_price_cache
 
+# Headless backend: the simulator may draw figures from worker threads
 matplotlib.use("Agg")
-
-# Plot style scoped to GUI only — does not affect power_flow_simulator.py CLI plots.
-# Applied via plt.rc_context(_GUI_PLOT_RC) around each figure creation.
-_DARK_BG = plt.style.library["dark_background"]
-_GUI_PLOT_RC = {
-    **_DARK_BG,
-    "font.size": 12,
-    "axes.titlesize": 15,
-    "axes.labelsize": 13,
-    "xtick.labelsize": 11,
-    "ytick.labelsize": 11,
-    "legend.fontsize": 11,
-    "figure.facecolor": "#1d1d1d",
-    "axes.facecolor": "#2a2a2a",
-    "savefig.facecolor": "#1d1d1d",
-}
 
 _ACCEPT = ",".join(SUPPORTED_EXTENSIONS)
 
@@ -294,21 +278,6 @@ def resolve_network_tariffs(params: dict) -> tuple[dict, dict]:
     )
 
 
-def fig_to_png_bytes(fig) -> bytes:
-    buf = io.BytesIO()
-    fig.savefig(
-        buf,
-        format="png",
-        dpi=150,
-        bbox_inches="tight",
-        facecolor=fig.get_facecolor(),
-        edgecolor="none",
-    )
-    plt.close(fig)
-    buf.seek(0)
-    return buf.read()
-
-
 async def run_single_simulation(params: dict, results_container, spinner):
     """Run a single scenario simulation in a background thread."""
     spinner.visible = True
@@ -462,12 +431,6 @@ async def run_single_simulation(params: dict, results_container, spinner):
                 )
             columns = [{"name": k, "label": k, "field": k, "sortable": True} for k in rows[0]]
             ui.table(columns=columns, rows=rows).classes("q-mt-sm")
-
-
-def _b64(data: bytes) -> str:
-    import base64
-
-    return base64.b64encode(data).decode()
 
 
 # Days shown when the power flow chart first opens (the user picks start/end dates after)
