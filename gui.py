@@ -12,7 +12,6 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import matplotlib
-import matplotlib.pyplot as plt
 import pandas as pd
 from nicegui import app, ui
 
@@ -33,23 +32,8 @@ from power_flow_simulator import (
 )
 from price_cache import DEFAULT_CACHE_DIR, cached_price_file, market_price_file, update_price_cache
 
+# Headless backend: the simulator may draw figures from worker threads
 matplotlib.use("Agg")
-
-# Plot style scoped to GUI only — does not affect power_flow_simulator.py CLI plots.
-# Applied via plt.rc_context(_GUI_PLOT_RC) around each figure creation.
-_DARK_BG = plt.style.library["dark_background"]
-_GUI_PLOT_RC = {
-    **_DARK_BG,
-    "font.size": 12,
-    "axes.titlesize": 15,
-    "axes.labelsize": 13,
-    "xtick.labelsize": 11,
-    "ytick.labelsize": 11,
-    "legend.fontsize": 11,
-    "figure.facecolor": "#1d1d1d",
-    "axes.facecolor": "#2a2a2a",
-    "savefig.facecolor": "#1d1d1d",
-}
 
 _ACCEPT = ",".join(SUPPORTED_EXTENSIONS)
 
@@ -294,21 +278,6 @@ def resolve_network_tariffs(params: dict) -> tuple[dict, dict]:
     )
 
 
-def fig_to_png_bytes(fig) -> bytes:
-    buf = io.BytesIO()
-    fig.savefig(
-        buf,
-        format="png",
-        dpi=150,
-        bbox_inches="tight",
-        facecolor=fig.get_facecolor(),
-        edgecolor="none",
-    )
-    plt.close(fig)
-    buf.seek(0)
-    return buf.read()
-
-
 async def run_single_simulation(params: dict, results_container, spinner):
     """Run a single scenario simulation in a background thread."""
     spinner.visible = True
@@ -371,67 +340,9 @@ async def run_single_simulation(params: dict, results_container, spinner):
         transmission_breakdown = sim.calculate_transmission_cost_breakdown()
         ove_spte = sim.calculate_ove_spte_cost(sim.max_power_by_block_simulated)
 
-        # Build power flow figure
+        # Full-year power flow chart (zoomable ECharts, built in the worker thread)
         r = sim.simulation_results
-        days = 7
-        kw_factor = sim.kw_factor
-        intervals_per_hour = int(1 / sim.interval_hours)
-        plot_data = r.head(days * 24 * intervals_per_hour).copy()
-        idx = range(len(plot_data))
-
-        with plt.rc_context(_GUI_PLOT_RC):
-            fig, (ax1, ax2, ax3) = plt.subplots(3, 1, figsize=(14, 9))
-            ax1.plot(
-                idx,
-                plot_data["solar_generation_kwh"] * kw_factor,
-                label="Solar",
-                color="orange",
-                lw=1.5,
-            )
-            ax1.plot(
-                idx,
-                plot_data["consumption_kwh"] * kw_factor,
-                label="Consumption",
-                color="blue",
-                lw=1.5,
-            )
-            ax1.fill_between(
-                idx, 0, plot_data["solar_generation_kwh"] * kw_factor, alpha=0.2, color="orange"
-            )
-            ax1.set_ylabel("Power (kW)")
-            ax1.set_title(f"Power Flows — First {days} Days")
-            ax1.legend()
-            ax1.grid(True, alpha=0.3)
-
-            ax2.plot(idx, plot_data["battery_soc_percent"], color="green", lw=1.5)
-            ax2.fill_between(idx, 0, plot_data["battery_soc_percent"], alpha=0.2, color="green")
-            ax2.set_ylabel("Battery SOC (%)")
-            ax2.set_ylim(0, 100)
-            ax2.grid(True, alpha=0.3)
-
-            ax3.plot(
-                idx, plot_data["grid_import_kwh"] * kw_factor, label="Import", color="red", lw=1.5
-            )
-            ax3.plot(
-                idx,
-                -plot_data["grid_export_kwh"] * kw_factor,
-                label="Export",
-                color="purple",
-                lw=1.5,
-            )
-            ax3.fill_between(
-                idx, 0, plot_data["grid_import_kwh"] * kw_factor, alpha=0.2, color="red"
-            )
-            ax3.fill_between(
-                idx, 0, -plot_data["grid_export_kwh"] * kw_factor, alpha=0.2, color="purple"
-            )
-            ax3.set_ylabel("Power (kW)")
-            ax3.set_xlabel("15-min intervals")
-            ax3.legend()
-            ax3.grid(True, alpha=0.3)
-
-            fig.tight_layout()
-            plot_bytes = fig_to_png_bytes(fig)
+        chart_options = power_flow_chart_options(r, sim.kw_factor)
         # Summary stats
         total_consumption = r["consumption_kwh"].sum()
         total_solar = r["solar_generation_kwh"].sum()
@@ -452,7 +363,7 @@ async def run_single_simulation(params: dict, results_container, spinner):
             "cost_analysis": cost_analysis,
             "transmission_breakdown": transmission_breakdown,
             "ove_spte": ove_spte,
-            "plot_bytes": plot_bytes,
+            "chart_options": chart_options,
             "market_export": sim.export_price_file is not None,
             "total_consumption": total_consumption,
             "total_solar": total_solar,
@@ -496,9 +407,9 @@ async def run_single_simulation(params: dict, results_container, spinner):
             _metric_card("Avg SOC", f"{result['avg_soc']:.1f}%")
             _metric_card("Battery Cycles", f"{result['cycles']:.1f}/yr")
 
-        # Power flow plot
+        # Power flow plot: whole year, zoomable, with a date window selector above it
         ui.label("Power Flow Visualization").classes("text-h6 q-mt-lg")
-        ui.image(f"data:image/png;base64,{_b64(result['plot_bytes'])}").classes("w-full")
+        _power_flow_chart(result["chart_options"])
 
         # Transmission breakdown table
         tb = result["transmission_breakdown"]
@@ -522,10 +433,268 @@ async def run_single_simulation(params: dict, results_container, spinner):
             ui.table(columns=columns, rows=rows).classes("q-mt-sm")
 
 
-def _b64(data: bytes) -> str:
-    import base64
+# Days shown when the power flow chart first opens (the user picks start/end dates after)
+POWER_FLOW_INITIAL_DAYS = 7
+_CHART_TIME_FMT = "%Y-%m-%d %H:%M"
+# ECharts cascading time-axis labels (picked by tick granularity)
+_TIME_LABELS = {
+    "year": "{yyyy}",
+    "month": "{MMM} {yyyy}",
+    "day": "{d} {MMM}",
+    "hour": "{HH}:{mm}",
+    "minute": "{HH}:{mm}",
+}
+_CHART_AXIS = {
+    "axisLabel": {"color": "#9e9e9e"},
+    "axisLine": {"lineStyle": {"color": "#757575"}},
+    "splitLine": {"lineStyle": {"color": "rgba(128,128,128,0.25)"}},
+    "nameTextStyle": {"color": "#9e9e9e"},
+}
 
-    return base64.b64encode(data).decode()
+
+def power_flow_days(first: pd.Timestamp, last: pd.Timestamp) -> tuple[pd.Timestamp, pd.Timestamp]:
+    """First and last calendar day covered by interval-end labels ``first``..``last``.
+
+    A label at midnight closes the previous day's last interval, so it belongs to that day.
+    """
+    return first.normalize(), (last - pd.Timedelta(minutes=1)).normalize()
+
+
+def power_flow_range(
+    start: str, end: str, first: pd.Timestamp, last: pd.Timestamp
+) -> tuple[str, str]:
+    """Zoom range (chart time strings) showing the days ``start``..``end``, both inclusive.
+
+    Swapped dates are reordered and the range is clamped to the data ``first``..``last``.
+    """
+    day = pd.Timedelta(days=1)
+    s, e = sorted((pd.Timestamp(start).normalize(), pd.Timestamp(end).normalize()))
+    begin = min(max(s, first), last - day)
+    stop = min(e + day, last)
+    if stop <= begin:
+        stop = min(begin + day, last)
+    return begin.strftime(_CHART_TIME_FMT), stop.strftime(_CHART_TIME_FMT)
+
+
+def power_flow_chart_options(
+    results: pd.DataFrame, kw_factor: float, initial_days: int = POWER_FLOW_INITIAL_DAYS
+) -> dict:
+    """ECharts options for the full-period power flow plot (power, SOC, grid; linked zoom)."""
+    times = pd.to_datetime(results["datetime"])
+    values = pd.DataFrame(
+        {
+            "solar": results["solar_generation_kwh"] * kw_factor,
+            "consumption": results["consumption_kwh"] * kw_factor,
+            "soc": results["battery_soc_percent"],
+            "import": results["grid_import_kwh"] * kw_factor,
+            "export": -results["grid_export_kwh"] * kw_factor,
+        }
+    ).round(2)
+    values.insert(0, "time", times.dt.strftime(_CHART_TIME_FMT))
+    first, last = times.min(), times.max()
+    first_day = power_flow_days(first, last)[0]
+    zoom = power_flow_range(
+        str(first_day.date()),
+        str((first_day + pd.Timedelta(days=initial_days - 1)).date()),
+        first,
+        last,
+    )
+
+    def series(name, dim, color, grid, area=True):
+        return {
+            "name": name,
+            "type": "line",
+            "encode": {"x": "time", "y": dim},
+            "xAxisIndex": grid,
+            "yAxisIndex": grid,
+            "showSymbol": False,
+            "sampling": "lttb",
+            "lineStyle": {"width": 1.2},
+            "color": color,
+            **({"areaStyle": {"opacity": 0.2}} if area else {}),
+        }
+
+    grids = [("8%", "28%"), ("44%", "18%"), ("70%", "18%")]
+    y_names = ["Power (kW)", "Battery SOC (%)", "Grid (kW)"]
+    zoom_range = {"startValue": zoom[0], "endValue": zoom[1]}
+    return {
+        "animation": False,
+        "backgroundColor": "transparent",
+        "textStyle": {"color": "#bdbdbd"},
+        "dataset": {
+            "dimensions": list(values.columns),
+            "source": values.values.tolist(),
+        },
+        "legend": {"top": 0, "textStyle": {"color": "#bdbdbd"}},
+        "tooltip": {"trigger": "axis", "axisPointer": {"type": "line"}},
+        "axisPointer": {"link": [{"xAxisIndex": "all"}]},
+        "toolbox": {
+            "right": 10,
+            "feature": {"dataZoom": {"yAxisIndex": "none"}, "restore": {}},
+            "iconStyle": {"borderColor": "#9e9e9e"},
+        },
+        "grid": [{"left": 70, "right": 30, "top": top, "height": height} for top, height in grids],
+        "xAxis": [
+            {
+                "type": "time",
+                "gridIndex": i,
+                **_CHART_AXIS,
+                "axisLabel": {
+                    "color": "#9e9e9e",
+                    "show": i == len(grids) - 1,
+                    "hideOverlap": True,
+                    "formatter": _TIME_LABELS,
+                },
+            }
+            for i in range(len(grids))
+        ],
+        "yAxis": [
+            {
+                "type": "value",
+                "gridIndex": i,
+                "name": name,
+                "nameLocation": "middle",
+                "nameGap": 50,
+                **_CHART_AXIS,
+                **({"min": 0, "max": 100} if i == 1 else {}),
+            }
+            for i, name in enumerate(y_names)
+        ],
+        "dataZoom": [
+            {"type": "inside", "xAxisIndex": [0, 1, 2], **zoom_range},
+            {
+                "type": "slider",
+                "xAxisIndex": [0, 1, 2],
+                "bottom": 10,
+                "height": 28,
+                "textStyle": {"color": "#9e9e9e"},
+                "labelFormatter": "{yyyy}-{MM}-{dd}",
+                **zoom_range,
+            },
+        ],
+        "series": [
+            series("Solar", "solar", "#ff9800", 0),
+            series("Consumption", "consumption", "#42a5f5", 0, area=False),
+            series("Battery SOC", "soc", "#66bb6a", 1),
+            series("Grid import", "import", "#ef5350", 2),
+            series("Grid export", "export", "#ab47bc", 2),
+        ],
+    }
+
+
+def zoom_dates(event: dict, first: pd.Timestamp, last: pd.Timestamp) -> tuple[str, str] | None:
+    """Start and end dates (``YYYY-MM-DD``, inclusive) of a manual ``datazoom`` event.
+
+    Slider events carry ``start``/``end`` (percent of the data range), inside zoom/pan a
+    ``batch`` of them. Zooms dispatched by the date fields themselves carry ``startValue``
+    and are ignored (``None``), as are events without percentages.
+    """
+    zoom = (event.get("batch") or [event])[0]
+    if "startValue" in zoom:
+        return None
+    start, end = zoom.get("start"), zoom.get("end")
+    if not isinstance(start, int | float) or not isinstance(end, int | float):
+        return None
+    span = last - first
+    t0 = first + span * (start / 100)
+    t1 = first + span * (end / 100) - pd.Timedelta(minutes=1)  # midnight end = previous day
+    d0, d1 = t0.normalize(), max(t1.normalize(), t0.normalize())
+    return d0.strftime("%Y-%m-%d"), d1.strftime("%Y-%m-%d")
+
+
+def _date_field(label: str, value: str, min_d: str, max_d: str) -> ui.input:
+    """Date input (``YYYY-MM-DD``) with a calendar popup limited to ``min_d``..``max_d``."""
+    with ui.input(label, value=value).props("dense outlined").classes("w-40") as field:
+        with ui.menu().props("no-parent-event") as menu:
+            ui.date(mask="YYYY-MM-DD").bind_value(field).props(
+                f":options=\"d => d >= '{min_d}' && d <= '{max_d}'\""
+                f' default-year-month="{min_d[:7]}"'
+            ).on_value_change(menu.close)
+        with field.add_slot("append"):
+            ui.icon("edit_calendar").on("click", menu.open).classes("cursor-pointer")
+    return field
+
+
+def _power_flow_chart(options: dict) -> None:
+    """Start/end date selector above a zoomable full-period power flow chart."""
+    source = options["dataset"]["source"]
+    first, last = pd.Timestamp(source[0][0]), pd.Timestamp(source[-1][0])
+    first_day, last_day = power_flow_days(first, last)
+    zoom = options["dataZoom"][0]
+    init_start = pd.Timestamp(zoom["startValue"]).strftime("%Y-%m-%d")
+    init_end = (pd.Timestamp(zoom["endValue"]) - pd.Timedelta(minutes=1)).strftime("%Y-%m-%d")
+
+    syncing = False  # fields updated programmatically: don't re-zoom from their change events
+
+    def set_dates(start: str, end: str) -> None:
+        nonlocal syncing
+        syncing = True
+        try:
+            start_input.value, end_input.value = start, end
+        finally:
+            syncing = False
+
+    def apply(_=None) -> None:
+        if syncing:
+            return
+        try:
+            rng = power_flow_range(start_input.value, end_input.value, first, last)
+        except ValueError:  # half-typed date
+            return
+        chart.run_chart_method(
+            "dispatchAction", {"type": "dataZoom", "startValue": rng[0], "endValue": rng[1]}
+        )
+
+    def shift(direction: int) -> None:
+        try:
+            s, e = sorted((pd.Timestamp(start_input.value), pd.Timestamp(end_input.value)))
+        except ValueError:
+            return
+        span = e - s + pd.Timedelta(days=1)
+        s, e = s + direction * span, e + direction * span
+        if s < first_day:
+            s, e = first_day, first_day + span - pd.Timedelta(days=1)
+        if e > last_day:
+            s, e = max(first_day, last_day - span + pd.Timedelta(days=1)), last_day
+        set_dates(str(s.date()), str(e.date()))
+        apply()
+
+    def whole_period() -> None:
+        set_dates(str(first_day.date()), str(last_day.date()))
+        apply()
+
+    min_d, max_d = first_day.strftime("%Y/%m/%d"), last_day.strftime("%Y/%m/%d")
+    with ui.row().classes("items-center q-gutter-sm q-mt-sm"):
+        ui.button(icon="chevron_left", on_click=lambda: shift(-1)).props(
+            "flat round dense"
+        ).tooltip("Previous period of the same length")
+        start_input = _date_field("Start date", init_start, min_d, max_d)
+        end_input = _date_field("End date", init_end, min_d, max_d)
+        ui.button(icon="chevron_right", on_click=lambda: shift(1)).props(
+            "flat round dense"
+        ).tooltip("Next period of the same length")
+        ui.button("Whole year", icon="zoom_out_map", on_click=whole_period).props(
+            "flat dense no-caps"
+        )
+        ui.label("Scroll / drag on the chart or use the slider to zoom").classes(
+            "text-caption text-grey"
+        )
+    chart = ui.echart(options).classes("w-full").style("height: 680px")
+    start_input.on_value_change(apply)
+    end_input.on_value_change(apply)
+
+    def follow_zoom(e) -> None:
+        dates = zoom_dates(e.args or {}, first, last)
+        if dates and dates != (start_input.value, end_input.value):
+            set_dates(*dates)
+
+    chart.on(
+        "chart:datazoom",
+        follow_zoom,
+        ["start", "end", "batch", "startValue"],
+        throttle=0.2,
+        leading_events=False,
+    )
 
 
 def _metric_card(label: str, value: str):
