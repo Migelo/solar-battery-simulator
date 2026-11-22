@@ -4,7 +4,7 @@ import datetime as dt
 
 import pandas as pd
 
-from power_flow_simulator import (
+from solar_battery_simulator.simulator import (
     MultiScenarioAnalyzer,
     PowerFlowSimulator,
     easter_sunday,

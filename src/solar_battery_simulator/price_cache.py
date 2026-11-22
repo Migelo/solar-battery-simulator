@@ -20,7 +20,7 @@ Layout (under ``data/price_cache/`` by default)::
 * ``export_prices.csv`` is rewritten with the newest 365 days of prices.
 
 A failed download leaves the existing cache untouched. The GUI refreshes the cache at
-startup and daily; the CLI runs it with ``uv run price_cache.py``.
+startup and daily; the CLI runs it with ``uv run solar-price-cache``.
 
 Files use the generic price layout (``timestamp,price_eur_mwh``; timestamp = interval
 start, local CET/CEST time), so ``export_prices.csv`` works as ``--export-price-file``.
@@ -40,7 +40,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-from data_readers import load_export_prices
+from solar_battery_simulator.data_readers import load_export_prices
 
 API_URL = "https://api.energy-charts.info/price"
 LOCAL_TZ = "Europe/Ljubljana"

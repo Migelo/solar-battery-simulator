@@ -9,6 +9,8 @@ __pycache__/
 *.png
 *.jpg
 multi_scenario_comparison.csv
+power_flow_simulation_results.csv
+system_summary.csv
 data/price_cache/
 build/
 dist/

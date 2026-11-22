@@ -1,13 +1,8 @@
 """Integration tests for end-to-end simulation pipeline."""
 
-import sys
-from pathlib import Path
-
 import pandas as pd
 
-sys.path.insert(0, str(Path(__file__).parent.parent))
-
-from power_flow_simulator import MultiScenarioAnalyzer, PowerFlowSimulator
+from solar_battery_simulator.simulator import MultiScenarioAnalyzer, PowerFlowSimulator
 
 
 class TestFullPipeline:

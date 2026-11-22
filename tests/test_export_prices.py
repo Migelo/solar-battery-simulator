@@ -6,9 +6,9 @@ import numpy as np
 import pandas as pd
 import pytest
 
-import hupx_prices
-from data_readers import align_export_prices, load_export_prices
-from power_flow_simulator import PowerFlowSimulator, _input_fingerprint
+from solar_battery_simulator import hupx_prices
+from solar_battery_simulator.data_readers import align_export_prices, load_export_prices
+from solar_battery_simulator.simulator import PowerFlowSimulator, _input_fingerprint
 
 
 def _hupx_15min_csv(path, day="2026-10-20", prices=None, labels=None):
@@ -185,7 +185,7 @@ def test_export_fee_deducted_per_mwh(
 
 
 def test_export_fee_reaches_batch_simulation(sunny_production_csv, minimal_consumption_csv):
-    from power_flow_simulator import MultiScenarioAnalyzer
+    from solar_battery_simulator.simulator import MultiScenarioAnalyzer
 
     def savings(fee):
         analyzer = MultiScenarioAnalyzer(

@@ -4,8 +4,8 @@ import argparse
 
 import pytest
 
-import gui
-from power_flow_simulator import MultiScenarioAnalyzer, SubsidyConfig, _cli_subsidy
+from solar_battery_simulator import gui
+from solar_battery_simulator.simulator import MultiScenarioAnalyzer, SubsidyConfig, _cli_subsidy
 
 
 def _analyzer(subsidy=None, **kwargs) -> MultiScenarioAnalyzer:

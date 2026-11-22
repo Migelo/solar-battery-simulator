@@ -9,7 +9,7 @@ A Python tool for simulating and optimizing solar photovoltaic (PV) systems with
 - **Multi-scenario batch analysis** - Test hundreds of solar/battery/inverter combinations
 - **Economic analysis** - ROI, NPV, payback periods with time-of-use pricing
 - **Heating load modeling** - Simulate adding heat pump load to existing consumption
-- **Slovenian tariff support** - 5-block network tariffs per user group from `cenikOmreznin.csv` (or entered manually), OVE-SPTE fees, seasonal pricing
+- **Slovenian tariff support** - 5-block network tariffs per user group from `cenikOmreznin.csv` (bundled in the package; a copy in `data/` overrides it) (or entered manually), OVE-SPTE fees, seasonal pricing
 
 ## Windows: download and double-click
 
@@ -24,7 +24,7 @@ Nothing needs to be installed. Put your production and consumption files in a `d
 next to the exe, or upload them in the browser. The simulator only accepts connections from
 the same PC, so no firewall prompt appears and nobody else on your network can open it.
 
-Running from source instead? Double-click `start_windows.bat` (installs [uv](https://docs.astral.sh/uv/)
+Running from source instead? Double-click `windows\start_windows.bat` (installs [uv](https://docs.astral.sh/uv/)
 on first use).
 
 ## Installation
@@ -38,14 +38,20 @@ cd solar-battery-simulator
 
 ## Quick Start
 
+### Web GUI
+```bash
+uv run solar-gui   # http://localhost:8080
+```
+Or with Docker: `docker compose up --build` (input files in `data/`).
+
 ### Single Scenario
 ```bash
-uv run power_flow_simulator.py --solar-power 15 --battery-capacity 20
+uv run solar-sim --solar-power 15 --battery-capacity 20
 ```
 
 ### Batch Analysis
 ```bash
-uv run power_flow_simulator.py --batch-mode \
+uv run solar-sim --batch-mode \
   --solar-range 10,15,20 \
   --battery-range 0,10,20 \
   --inverter-range 8,10,15
@@ -54,7 +60,7 @@ uv run power_flow_simulator.py --batch-mode \
 ### With Heating Load
 Model adding a heat pump (e.g., 4000 kWh/season):
 ```bash
-uv run power_flow_simulator.py --batch-mode \
+uv run solar-sim --batch-mode \
   --solar-range 10,15,20 \
   --battery-range 10,20 \
   --add-heating-load --heating-kwh 4000
@@ -62,7 +68,7 @@ uv run power_flow_simulator.py --batch-mode \
 
 ## Input Data
 
-Requires two input files. Each may be **CSV, XLSX/XLSM or legacy XLS** (Excel files are read from the first sheet). Pass them to the CLI with `--production-file` / `--consumption-file`, or upload them in the GUI.
+Requires two input files. Each may be **CSV, XLSX/XLSM or legacy XLS** (Excel files are read from the first sheet). Pass them to the CLI with `--production-file` / `--consumption-file`, or upload them in the GUI. Both default to `data/production.csv` / `data/consumption.csv` (sample files for the site are committed there).
 
 **production.csv** - Solar generation data
 ```csv
@@ -91,9 +97,9 @@ CSV files may be comma-, semicolon- or tab-separated (semicolon files use decima
 
 Exported energy is paid either a **fixed price** (default, `--export-price` €/kWh) or **market prices** (`--export-pricing market`, or *Export pricing → Market price* in the GUI): the Slovenian day-ahead price of each interval, taken from the rolling cache of the **last 365 days** and matched to the consumption by month/day/time of day — whatever year the consumption data is from.
 
-**Rolling 1-year price cache (default source).** `price_cache.py` keeps the last 365 days of SI day-ahead prices in `data/price_cache/` (one CSV per month plus a combined `export_prices.csv`), downloaded from the free [Energy-Charts API](https://api.energy-charts.info) (Fraunhofer ISE, CC BY 4.0, data: Bundesnetzagentur | SMARD.de) — the same SIPX price HUPX publishes. Finished months are downloaded once and kept, the current month is refreshed (including tomorrow's prices once published), months older than the window are deleted, and a failed download keeps the existing cache.
+**Rolling 1-year price cache (default source).** `solar-price-cache` (`price_cache.py`) keeps the last 365 days of SI day-ahead prices in `data/price_cache/` (one CSV per month plus a combined `export_prices.csv`), downloaded from the free [Energy-Charts API](https://api.energy-charts.info) (Fraunhofer ISE, CC BY 4.0, data: Bundesnetzagentur | SMARD.de) — the same SIPX price HUPX publishes. Finished months are downloaded once and kept, the current month is refreshed (including tomorrow's prices once published), months older than the window are deleted, and a failed download keeps the existing cache.
 - GUI: refreshed at startup and every 6 hours; used when *Export pricing → Market price (SI day-ahead, last 365 days)* is selected. An uploaded price file takes precedence.
-- CLI: `--export-pricing market` updates the cache and uses it; `uv run price_cache.py` only updates it.
+- CLI: `--export-pricing market` updates the cache and uses it; `uv run solar-price-cache` only updates it.
 - Docker: the cache lives in the mounted `data/` directory, so it survives restarts.
 
 **Export fee.** `--export-fee` (GUI: *Export fee*, €/MWh, default 0) is deducted from every exported MWh in both fixed and market pricing — e.g. a supplier's margin on spot prices.
@@ -106,9 +112,9 @@ Accepted price files (CSV/XLSX/XLS):
 
 Each interval's export is paid that interval's price (negative prices reduce revenue). If the prices are from another year than the consumption data they are matched by month/day/time of day; up to 1% of intervals (leap day, DST hour) are gap-filled, otherwise the run stops — the file must cover a full year.
 
-`hupx_prices.py` downloads prices from the public HUPX API (without signing in only about the last two months are served):
+`solar-hupx-prices` downloads prices from the public HUPX API (without signing in only about the last two months are served):
 ```bash
-uv run hupx_prices.py --start 2026-10-01 --end 2026-10-31 --out data/export_prices.csv
+uv run solar-hupx-prices --start 2026-10-01 --end 2026-10-31 --out data/export_prices.csv
 ```
 
 ## Output
@@ -138,12 +144,24 @@ uv run hupx_prices.py --start 2026-10-01 --end 2026-10-31 --out data/export_pric
 | `--export-fee` | 0 | Fee deducted per exported MWh (€/MWh), fixed or market pricing |
 | `--export-pricing` | fixed | `fixed` or `market` (last-365-days SI day-ahead cache) |
 
-See `uv run power_flow_simulator.py --help` for all options.
+See `uv run solar-sim --help` for all options.
 
 ## Architecture
 
 ```
-power_flow_simulator.py
+src/solar_battery_simulator/
+├── gui.py            # NiceGUI web app (solar-gui)
+├── simulator.py      # simulation engine + CLI (solar-sim)
+├── data_readers.py   # CSV / Excel input parsing, network tariffs
+├── price_cache.py    # rolling SI day-ahead price cache (solar-price-cache)
+├── hupx_prices.py    # HUPX price fetcher (solar-hupx-prices)
+└── cenikOmreznin.csv # default network tariffs
+data/                 # input files (samples committed; price_cache/ gitignored)
+windows/              # exe build (PyInstaller) and start_windows.bat launcher
+docs/HOW_TO_USE.md    # CLI examples
+tests/
+
+simulator.py
 ├── PowerFlowSimulator      # Single scenario simulation
 │   ├── load_and_align_data()
 │   ├── apply_heating_load()

@@ -16,6 +16,19 @@ dependencies = [
     "xlrd>=2.0.2",
 ]
 
+[project.scripts]
+solar-gui = "solar_battery_simulator.gui:main"
+solar-sim = "solar_battery_simulator.simulator:main"
+solar-price-cache = "solar_battery_simulator.price_cache:main"
+solar-hupx-prices = "solar_battery_simulator.hupx_prices:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/solar_battery_simulator"]
+
 [project.optional-dependencies]
 test = [
     "pytest>=7.0",
@@ -30,7 +43,7 @@ python_files = ["test_*.py"]
 python_functions = ["test_*"]
 addopts = "-v --tb=short"
 asyncio_mode = "auto"
-main_file = "gui.py"
+main_file = "src/solar_battery_simulator/gui.py"
 filterwarnings = [
     "ignore::DeprecationWarning",
 ]
@@ -73,7 +86,7 @@ ignore = [
 
 [tool.ruff.lint.per-file-ignores]
 "__init__.py" = ["F401"]  # Allow unused imports in __init__.py
-"gui.py" = ["B018", "SIM117"]  # NiceGUI uses context managers for widget placement
+"**/gui.py" = ["B018", "SIM117"]  # NiceGUI uses context managers for widget placement
 
 [tool.mypy]
 python_version = "3.13"

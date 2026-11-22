@@ -3,7 +3,7 @@
 import pandas as pd
 import pytest
 
-from gui import (
+from solar_battery_simulator.gui import (
     BATCH_HEATMAPS,
     PAYBACK_CAP_YEARS,
     heatmap_cell,
@@ -12,7 +12,7 @@ from gui import (
     heatmap_grid,
     scenario_text,
 )
-from power_flow_simulator import MultiScenarioAnalyzer
+from solar_battery_simulator.simulator import MultiScenarioAnalyzer
 
 SPECS = {s.key: s for s in BATCH_HEATMAPS}
 
@@ -128,7 +128,7 @@ async def test_heatmap_click_and_context_menu_adopt_scenario(
 
     from nicegui import ui
 
-    import gui
+    from solar_battery_simulator import gui
 
     (tmp_path / "production.csv").write_bytes(minimal_production_csv.read_bytes())
     (tmp_path / "consumption.csv").write_bytes(minimal_consumption_csv.read_bytes())

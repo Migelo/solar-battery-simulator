@@ -5,12 +5,13 @@ WORKDIR /app
 COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
 
 COPY pyproject.toml uv.lock* ./
-RUN uv sync --frozen --no-dev
+RUN uv sync --frozen --no-dev --no-install-project
 
-COPY data_readers.py power_flow_simulator.py price_cache.py gui.py cenikOmreznin.csv ./
+COPY src/ src/
+RUN uv sync --frozen --no-dev
 
 ENV GUI_HOST=0.0.0.0 GUI_OPEN_BROWSER=0
 
 EXPOSE 8080
 
-CMD ["uv", "run", "gui.py"]
+CMD ["uv", "run", "--no-sync", "solar-gui"]

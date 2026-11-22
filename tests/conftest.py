@@ -1,8 +1,6 @@
 """Shared test fixtures for power flow simulator tests."""
 
 import os
-import sys
-from pathlib import Path
 
 import numpy as np
 import pandas as pd
@@ -12,9 +10,8 @@ import pytest
 os.environ["PRICE_CACHE_AUTO_UPDATE"] = "0"
 
 # Add parent directory to path for imports
-sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from power_flow_simulator import PowerFlowSimulator
+from solar_battery_simulator.simulator import PowerFlowSimulator
 
 # Activate NiceGUI headless testing (no browser required)
 pytest_plugins = ["nicegui.testing.user_plugin"]

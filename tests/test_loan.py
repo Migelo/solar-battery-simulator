@@ -2,8 +2,8 @@
 
 import pytest
 
-from gui import _loan_years
-from power_flow_simulator import MultiScenarioAnalyzer
+from solar_battery_simulator.gui import _loan_years
+from solar_battery_simulator.simulator import MultiScenarioAnalyzer
 
 
 def _analyzer(**kwargs):

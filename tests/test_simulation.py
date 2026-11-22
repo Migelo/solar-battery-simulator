@@ -1,14 +1,9 @@
 """Tests for core power flow simulation logic."""
 
-import sys
-from pathlib import Path
-
 import numpy as np
 import pytest
 
-sys.path.insert(0, str(Path(__file__).parent.parent))
-
-from power_flow_simulator import PowerFlowSimulator
+from solar_battery_simulator.simulator import PowerFlowSimulator
 
 
 class TestEnergyBalance:
