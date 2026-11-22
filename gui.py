@@ -2,11 +2,13 @@
 """NiceGUI frontend for the Power Flow Simulator."""
 
 import asyncio
+import base64
 import io
 import os
 import socket
 import tempfile
 import threading
+from dataclasses import dataclass
 from pathlib import Path
 
 import matplotlib
@@ -532,6 +534,250 @@ def _metric_card(label: str, value: str):
         ui.label(label).classes("text-caption text-grey-7")
 
 
+@dataclass(frozen=True)
+class HeatmapSpec:
+    """One batch heatmap: a result column over the solar × battery grid."""
+
+    key: str  # tab / file name
+    tab: str
+    column: str  # column in MultiScenarioAnalyzer.results
+    best: str  # "max" or "min": which inverter size wins a (solar, battery) cell
+    title: str
+    unit: str
+    decimals: int
+    colors: tuple[str, ...]  # low -> high
+    cap: float | None = None  # values above are shown as "<cap>+" (e.g. never paid back)
+
+
+_VIRIDIS = ("#440154", "#3b528b", "#21918c", "#5ec962", "#fde725")
+_RDYLGN = ("#d73027", "#fc8d59", "#fee08b", "#d9ef8b", "#91cf60", "#1a9850")
+_YLGN = ("#ffffe5", "#d9f0a3", "#78c679", "#238443", "#004529")
+PAYBACK_CAP_YEARS = 20
+
+BATCH_HEATMAPS = (
+    HeatmapSpec(
+        "savings", "Savings", "savings_vs_baseline", "max", "Annual savings", "€/yr", 0, _VIRIDIS
+    ),
+    HeatmapSpec(
+        "payback",
+        "ROI",
+        "payback_years",
+        "min",
+        "Payback period",
+        "years",
+        1,
+        _RDYLGN[::-1],
+        cap=PAYBACK_CAP_YEARS,
+    ),
+    HeatmapSpec(
+        "self_sufficiency",
+        "Self-Sufficiency",
+        "self_sufficiency_percent",
+        "max",
+        "Self-sufficiency",
+        "%",
+        1,
+        _YLGN,
+    ),
+    HeatmapSpec("npv", "NPV", "npv_20_years", "max", "20-year NPV", "€", 0, _RDYLGN),
+)
+_PLOT_BG = "#1d1d1d"  # background of downloaded PNGs (chart text is light grey)
+
+
+def heatmap_grid(results: pd.DataFrame, spec: HeatmapSpec) -> pd.DataFrame:
+    """Best value per (solar, battery) cell over all inverter sizes, with that inverter.
+
+    Columns: ``solar_kw``, ``battery_kwh``, ``inverter_kw``, ``value`` (capped at
+    ``spec.cap``), ``capped`` (raw value was above the cap, e.g. never paid back).
+    """
+    df = results[["solar_panel_power_kw", "battery_capacity_kwh", "inverter_power_kw"]].copy()
+    df["raw"] = pd.to_numeric(results[spec.column], errors="coerce")
+    df = df[df["raw"].notna()]
+    if df.empty:
+        return pd.DataFrame(columns=["solar_kw", "battery_kwh", "inverter_kw", "value", "capped"])
+    # Pick the winner on raw values (so 25 beats 30 years even though both show as "20+")
+    keys = ["solar_panel_power_kw", "battery_capacity_kwh"]
+    values = df.groupby(keys)["raw"]
+    best = df.loc[values.idxmax() if spec.best == "max" else values.idxmin()].copy()
+    best["capped"] = best["raw"] > spec.cap if spec.cap is not None else False
+    best["value"] = best["raw"].clip(upper=spec.cap) if spec.cap is not None else best["raw"]
+    best = best.drop(columns="raw")
+    return (
+        best.rename(
+            columns={
+                "solar_panel_power_kw": "solar_kw",
+                "battery_capacity_kwh": "battery_kwh",
+                "inverter_power_kw": "inverter_kw",
+            }
+        )
+        .sort_values(["battery_kwh", "solar_kw"])
+        .reset_index(drop=True)
+    )
+
+
+def _fmt_kw(x: float) -> str:
+    return f"{x:g}"
+
+
+def _fmt_value(spec: HeatmapSpec, value: float, capped: bool) -> str:
+    text = f"{value:,.{spec.decimals}f}"
+    return f"{text}+" if capped else text
+
+
+def heatmap_chart_options(grid: pd.DataFrame, spec: HeatmapSpec) -> dict:
+    """ECharts heatmap: solar on x, battery on y, colour + label = best value, rich tooltip."""
+    solars = sorted(grid["solar_kw"].unique())
+    batteries = sorted(grid["battery_kwh"].unique())
+    data = []
+    for row in grid.itertuples():
+        label = _fmt_value(spec, row.value, row.capped)
+        data.append(
+            {
+                "value": [
+                    solars.index(row.solar_kw),
+                    batteries.index(row.battery_kwh),
+                    round(float(row.value), spec.decimals),
+                ],
+                "name": (
+                    f"Solar {_fmt_kw(row.solar_kw)} kW · Battery {_fmt_kw(row.battery_kwh)} kWh"
+                    f"<br>Best inverter: {_fmt_kw(row.inverter_kw)} kW"
+                    f"<br><b>{spec.title}: {label} {spec.unit}</b>"
+                ),
+                "label": {"formatter": label},
+            }
+        )
+    lo = 0 if spec.cap is not None else float(grid["value"].min()) if len(grid) else 0
+    hi = spec.cap if spec.cap is not None else float(grid["value"].max()) if len(grid) else 1
+    axis_style = {
+        "axisLabel": {"color": "#9e9e9e"},
+        "axisLine": {"lineStyle": {"color": "#757575"}},
+        "nameTextStyle": {"color": "#9e9e9e"},
+        "nameLocation": "middle",
+        "splitArea": {"show": False},
+    }
+    return {
+        "animation": False,
+        "backgroundColor": "transparent",
+        "title": {
+            "text": f"{spec.title} ({spec.unit}) — best inverter per cell",
+            "left": "center",
+            "textStyle": {"color": "#e0e0e0", "fontSize": 15},
+        },
+        "tooltip": {"position": "top", ":formatter": "p => p.name"},
+        "toolbox": {
+            "right": 10,
+            "feature": {
+                "saveAsImage": {
+                    "name": f"batch_{spec.key}",
+                    "pixelRatio": 2,
+                    "backgroundColor": _PLOT_BG,
+                    "title": "Save PNG",
+                }
+            },
+            "iconStyle": {"borderColor": "#9e9e9e"},
+        },
+        "grid": {"left": 80, "right": 110, "top": 50, "bottom": 60, "containLabel": False},
+        "xAxis": {
+            "type": "category",
+            "data": [_fmt_kw(s) for s in solars],
+            "name": "Solar (kW)",
+            "nameGap": 32,
+            **axis_style,
+        },
+        "yAxis": {
+            "type": "category",
+            "data": [_fmt_kw(b) for b in batteries],
+            "name": "Battery (kWh)",
+            "nameGap": 50,
+            **axis_style,
+        },
+        "visualMap": {
+            "min": lo,
+            "max": hi if hi > lo else lo + 1,
+            "calculable": True,
+            "orient": "vertical",
+            "right": 10,
+            "top": "middle",
+            "precision": spec.decimals,
+            "inRange": {"color": list(spec.colors)},
+            "textStyle": {"color": "#bdbdbd"},
+            "text": [spec.unit, ""],
+        },
+        "series": [
+            {
+                "type": "heatmap",
+                "data": data,
+                "label": {
+                    "show": len(solars) * len(batteries) <= 400,
+                    "color": "#fff",
+                    "textBorderColor": "rgba(0,0,0,0.7)",
+                    "textBorderWidth": 2,
+                    "fontSize": 11,
+                },
+                "itemStyle": {"borderColor": _PLOT_BG, "borderWidth": 1},
+                "emphasis": {"itemStyle": {"borderColor": "#fff", "borderWidth": 2}},
+            }
+        ],
+    }
+
+
+def heatmap_csv_bytes(grid: pd.DataFrame, spec: HeatmapSpec) -> bytes:
+    """Heatmap grid as CSV (battery rows × solar columns), Slovenian locale like the table export."""
+    pivot = grid.pivot(index="battery_kwh", columns="solar_kw", values="value").round(
+        max(spec.decimals, 2)
+    )
+    pivot.columns = [f"Solar {_fmt_kw(c)} kW" for c in pivot.columns]
+    pivot.index = [_fmt_kw(i) for i in pivot.index]
+    pivot.index.name = f"Battery (kWh) \\ {spec.title} ({spec.unit})"
+    text = pivot.to_csv(sep=";", decimal=",", lineterminator="\r\n")
+    return text.encode("utf-8-sig")
+
+
+def _heatmap_height(grid: pd.DataFrame) -> int:
+    rows = max(grid["battery_kwh"].nunique(), 1)
+    return max(360, min(900, 34 * rows + 140))
+
+
+def _batch_heatmap(grid: pd.DataFrame, spec: HeatmapSpec) -> None:
+    """Interactive heatmap with PNG / CSV download buttons."""
+    if grid.empty:
+        ui.label("No valid scenarios for this metric.").classes("text-grey q-pa-md")
+        return
+
+    async def download_png() -> None:
+        url = await chart.run_chart_method(
+            "getDataURL",
+            {
+                "type": "png",
+                "pixelRatio": 2,
+                "backgroundColor": _PLOT_BG,
+                "excludeComponents": ["toolbox"],
+            },
+        )
+        if isinstance(url, str) and "," in url:
+            ui.download.content(base64.b64decode(url.split(",", 1)[1]), f"batch_{spec.key}.png")
+        else:
+            ui.notify("Could not export the chart image", type="warning")
+
+    with ui.row().classes("items-center q-gutter-sm"):
+        ui.button("PNG", icon="image", on_click=download_png).props("outline dense")
+        ui.button(
+            "CSV",
+            icon="download",
+            on_click=lambda: ui.download.content(
+                heatmap_csv_bytes(grid, spec), f"batch_{spec.key}.csv"
+            ),
+        ).props("outline dense")
+        ui.label("Hover a cell for details; drag the colour bar to filter.").classes(
+            "text-caption text-grey"
+        )
+    chart = (
+        ui.echart(heatmap_chart_options(grid, spec))
+        .classes("w-full")
+        .style(f"height: {_heatmap_height(grid)}px")
+    )
+
+
 class _BatchStopped(Exception):
     """Raised inside the batch worker when the user pressed Stop Analysis."""
 
@@ -638,108 +884,15 @@ async def run_batch_analysis(
         progress["phase"] = "Generating plots"
         analyzer.create_comparison_summary(output_path=None)
 
-        # Build heatmap figures in memory instead of saving to files
-        plots = {}
+        # Heatmap grids (rendered client-side as interactive ECharts)
         df = pd.DataFrame(analyzer.results)
-
-        import seaborn as sns
-
-        with plt.rc_context(_GUI_PLOT_RC):
-            # Savings heatmap
-            pivot = df.pivot_table(
-                values="savings_vs_baseline",
-                index="battery_capacity_kwh",
-                columns="solar_panel_power_kw",
-                aggfunc="max",
-            )
-            fig, ax = plt.subplots(figsize=(10, 6))
-            sns.heatmap(
-                pivot,
-                annot=True,
-                fmt=".0f",
-                cmap="viridis",
-                cbar_kws={"label": "Annual Savings (\u20ac)"},
-                ax=ax,
-            )
-            ax.set_title("Annual Savings: Solar vs Battery")
-            ax.set_xlabel("Solar (kW)")
-            ax.set_ylabel("Battery (kWh)")
-            fig.tight_layout()
-            plots["savings"] = fig_to_png_bytes(fig)
-
-            # ROI heatmap
-            df["payback_capped"] = df["payback_years"].apply(lambda x: min(x, 20))
-            pivot = df.pivot_table(
-                values="payback_capped",
-                index="battery_capacity_kwh",
-                columns="solar_panel_power_kw",
-                aggfunc="min",
-            )
-            fig, ax = plt.subplots(figsize=(10, 6))
-            sns.heatmap(
-                pivot,
-                annot=True,
-                fmt=".1f",
-                cmap="RdYlGn_r",
-                vmin=0,
-                vmax=20,
-                cbar_kws={"label": "Payback (years)"},
-                ax=ax,
-            )
-            ax.set_title("ROI Payback Period: Solar vs Battery")
-            ax.set_xlabel("Solar (kW)")
-            ax.set_ylabel("Battery (kWh)")
-            fig.tight_layout()
-            plots["roi"] = fig_to_png_bytes(fig)
-
-            # Self-sufficiency heatmap
-            pivot = df.pivot_table(
-                values="self_sufficiency_percent",
-                index="battery_capacity_kwh",
-                columns="solar_panel_power_kw",
-                aggfunc="max",
-            )
-            fig, ax = plt.subplots(figsize=(10, 6))
-            sns.heatmap(
-                pivot,
-                annot=True,
-                fmt=".1f",
-                cmap="YlGn",
-                cbar_kws={"label": "Self-Sufficiency (%)"},
-                ax=ax,
-            )
-            ax.set_title("Self-Sufficiency: Solar vs Battery")
-            ax.set_xlabel("Solar (kW)")
-            ax.set_ylabel("Battery (kWh)")
-            fig.tight_layout()
-            plots["self_sufficiency"] = fig_to_png_bytes(fig)
-
-            # NPV heatmap
-            if "npv_20_years" in df.columns:
-                pivot = df.pivot_table(
-                    values="npv_20_years",
-                    index="battery_capacity_kwh",
-                    columns="solar_panel_power_kw",
-                    aggfunc="max",
-                )
-                fig, ax = plt.subplots(figsize=(10, 6))
-                sns.heatmap(
-                    pivot,
-                    annot=True,
-                    fmt=".0f",
-                    cmap="RdYlGn",
-                    cbar_kws={"label": "NPV 20yr (\u20ac)"},
-                    ax=ax,
-                )
-                ax.set_title("20-Year NPV: Solar vs Battery")
-                ax.set_xlabel("Solar (kW)")
-                ax.set_ylabel("Battery (kWh)")
-                fig.tight_layout()
-                plots["npv"] = fig_to_png_bytes(fig)
+        heatmaps = [
+            (spec, heatmap_grid(df, spec)) for spec in BATCH_HEATMAPS if spec.column in df.columns
+        ]
 
         comparison_df = comparison_dataframe(analyzer.results)
         return {
-            "plots": plots,
+            "heatmaps": heatmaps,
             "comparison_df": comparison_df,
             "table_rows": comparison_table_rows(comparison_df),
             "n_scenarios": len(analyzer.results),
@@ -769,28 +922,13 @@ async def run_batch_analysis(
     with results_container:
         ui.label(f"Batch Results — {result['n_scenarios']} scenarios").classes("text-h5 q-mt-md")
 
-        # Heatmaps
+        # Heatmaps: interactive, each with PNG / CSV download
         with ui.tabs().classes("q-mt-md") as tabs:
-            savings_tab = ui.tab("Savings")
-            roi_tab = ui.tab("ROI")
-            ss_tab = ui.tab("Self-Sufficiency")
-            if "npv" in result["plots"]:
-                npv_tab = ui.tab("NPV")
-
-        def _plot_img(plot_bytes):
-            b64 = _b64(plot_bytes)
-            ui.html(f'<img src="data:image/png;base64,{b64}" style="width:100%;height:auto">')
-
-        with ui.tab_panels(tabs, value=savings_tab).classes("w-full"):
-            with ui.tab_panel(savings_tab):
-                _plot_img(result["plots"]["savings"])
-            with ui.tab_panel(roi_tab):
-                _plot_img(result["plots"]["roi"])
-            with ui.tab_panel(ss_tab):
-                _plot_img(result["plots"]["self_sufficiency"])
-            if "npv" in result["plots"]:
-                with ui.tab_panel(npv_tab):
-                    _plot_img(result["plots"]["npv"])
+            heatmap_tabs = [ui.tab(spec.tab) for spec, _ in result["heatmaps"]]
+        with ui.tab_panels(tabs, value=heatmap_tabs[0] if heatmap_tabs else None).classes("w-full"):
+            for tab, (spec, grid) in zip(heatmap_tabs, result["heatmaps"], strict=True):
+                with ui.tab_panel(tab):
+                    _batch_heatmap(grid, spec)
 
         # Comparison table
         ui.label("Scenario Comparison").classes("text-h6 q-mt-lg")
@@ -1319,6 +1457,10 @@ def index():
     ui.add_css(
         """
         .q-uploader__list:empty { display: none; }
+        /* Results panels: keep content at the viewport width so charts fit and wide tables
+           scroll inside themselves instead of stretching the whole panel */
+        .results-scroll .q-scrollarea__content { width: 100%; }
+        .results-scroll .q-table__container { max-width: 100%; }
         .q-expansion-item {
             border: 1px solid rgba(128, 128, 128, 0.35);
             border-radius: 6px;
@@ -1405,12 +1547,20 @@ def index():
         with splitter.after:
             with ui.tab_panels(tabs, value=batch_tab).classes("w-full"):
                 with ui.tab_panel(batch_tab):
-                    with ui.scroll_area().classes("w-full").style("height: calc(100vh - 170px)"):
+                    with (
+                        ui.scroll_area()
+                        .classes("w-full results-scroll")
+                        .style("height: calc(100vh - 170px)")
+                    ):
                         batch_spinner = ui.spinner("dots", size="xl")
                         batch_spinner.visible = False
                         batch_results = ui.column().classes("w-full")
                 with ui.tab_panel(single_tab):
-                    with ui.scroll_area().classes("w-full").style("height: calc(100vh - 170px)"):
+                    with (
+                        ui.scroll_area()
+                        .classes("w-full results-scroll")
+                        .style("height: calc(100vh - 170px)")
+                    ):
                         single_spinner = ui.spinner("dots", size="xl")
                         single_spinner.visible = False
                         single_results = ui.column().classes("w-full")
