@@ -164,7 +164,8 @@ class TestDefaults:
             assert f"pf{i}" in DEFAULTS
 
     def test_default_values_reasonable(self):
-        assert 0 < DEFAULTS["solar_power"] < 100
+        assert 0 < DEFAULTS["inverter_power"] <= DEFAULTS["solar_power"]
+        assert DEFAULTS["battery_capacity"] >= 0
         assert 0 < DEFAULTS["battery_efficiency"] <= 1.0
         assert 0 < DEFAULTS["peak_price"] < 1.0
         assert DEFAULTS["peak_price"] > DEFAULTS["off_peak_price"]

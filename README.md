@@ -126,9 +126,9 @@ uv run hupx_prices.py --start 2026-10-01 --end 2026-10-31 --out data/export_pric
 
 | Parameter | Default | Description |
 |-----------|---------|-------------|
-| `--solar-power` | 8.5 | Solar panel capacity (kW) |
-| `--inverter-power` | 8.0 | Inverter AC output limit (kW) |
-| `--battery-capacity` | 10.0 | Battery storage (kWh) |
+| `--solar-power` | 400 | Solar panel capacity (kW) |
+| `--inverter-power` | 300 | Inverter AC output limit (kW) |
+| `--battery-capacity` | 250 | Battery storage (kWh) |
 | `--battery-c-rate` | 0.5 | Charge/discharge rate |
 | `--battery-efficiency` | 0.9 | Round-trip efficiency |
 | `--peak-price` | 0.147 | Peak electricity (€/kWh) |

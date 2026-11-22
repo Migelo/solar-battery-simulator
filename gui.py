@@ -1228,9 +1228,10 @@ def comparison_xlsx_bytes(df: pd.DataFrame) -> bytes:
 # Shared parameter state with defaults
 # ---------------------------------------------------------------------------
 DEFAULTS = {
-    "solar_power": 8.5,
-    "inverter_power": 8.0,
-    "battery_capacity": 10.0,
+    # Middle of the batch grid below, sized for the bundled ~100-300 kW site
+    "solar_power": 400.0,
+    "inverter_power": 300.0,
+    "battery_capacity": 250.0,
     "battery_c_rate": 0.5,
     "battery_efficiency": 0.9,
     "peak_price": 0.14683,
