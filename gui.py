@@ -3,11 +3,13 @@
 
 import asyncio
 import base64
+import inspect
 import io
 import os
 import socket
 import tempfile
 import threading
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -902,13 +904,43 @@ def heatmap_csv_bytes(grid: pd.DataFrame, spec: HeatmapSpec) -> bytes:
     return text.encode("utf-8-sig")
 
 
+def heatmap_cell(grid: pd.DataFrame, data_index) -> tuple[float, float, float] | None:
+    """(solar kW, inverter kW, battery kWh) of a clicked heatmap cell.
+
+    ``data_index`` is the ECharts ``dataIndex``: the series data is built from ``grid`` in
+    row order, so it is the grid's positional row index.
+    """
+    if not isinstance(data_index, int) or not 0 <= data_index < len(grid):
+        return None
+    row = grid.iloc[data_index]
+    return float(row["solar_kw"]), float(row["inverter_kw"]), float(row["battery_kwh"])
+
+
+def scenario_text(cell: tuple[float, float, float]) -> str:
+    solar, inverter, battery = cell
+    return (
+        f"Solar {_fmt_kw(solar)} kW · Inverter {_fmt_kw(inverter)} kW · "
+        f"Battery {_fmt_kw(battery)} kWh"
+    )
+
+
+# Callback for a picked heatmap cell: (solar kW, inverter kW, battery kWh), run now?
+ScenarioPick = Callable[[tuple[float, float, float], bool], Awaitable[None] | None]
+
+
 def _heatmap_height(grid: pd.DataFrame) -> int:
     rows = max(grid["battery_kwh"].nunique(), 1)
     return max(360, min(900, 34 * rows + 140))
 
 
-def _batch_heatmap(grid: pd.DataFrame, spec: HeatmapSpec) -> None:
-    """Interactive heatmap with PNG / CSV download buttons."""
+def _batch_heatmap(
+    grid: pd.DataFrame, spec: HeatmapSpec, on_pick: ScenarioPick | None = None
+) -> None:
+    """Interactive heatmap with PNG / CSV download buttons.
+
+    With ``on_pick``, a left click on a cell adopts its scenario into the Single Scenario
+    tab; a right click opens a menu to adopt it or to run it right away.
+    """
     if grid.empty:
         ui.label("No valid scenarios for this metric.").classes("text-grey q-pa-md")
         return
@@ -937,14 +969,55 @@ def _batch_heatmap(grid: pd.DataFrame, spec: HeatmapSpec) -> None:
                 heatmap_csv_bytes(grid, spec), f"batch_{spec.key}.csv"
             ),
         ).props("outline dense")
-        ui.label("Hover a cell for details; drag the colour bar to filter.").classes(
-            "text-caption text-grey"
+        hint = "Hover a cell for details; drag the colour bar to filter."
+        if on_pick:
+            hint += " Click a cell to use it in Single Scenario; right-click for more."
+        ui.label(hint).classes("text-caption text-grey")
+    with ui.element("div").classes("w-full"):
+        chart = (
+            ui.echart(heatmap_chart_options(grid, spec))
+            .classes("w-full")
+            .style(f"height: {_heatmap_height(grid)}px")
         )
-    chart = (
-        ui.echart(heatmap_chart_options(grid, spec))
-        .classes("w-full")
-        .style(f"height: {_heatmap_height(grid)}px")
-    )
+        if on_pick is None:
+            return
+        picked: dict = {"cell": None, "fresh": False}
+
+        async def pick(run: bool) -> None:
+            if picked["cell"] is not None:
+                await _maybe_await(on_pick(picked["cell"], run))
+
+        async def left_click(e) -> None:
+            cell = heatmap_cell(grid, e.data_index)
+            if cell is not None:
+                await _maybe_await(on_pick(cell, False))
+
+        def right_click(e) -> None:
+            picked["cell"] = heatmap_cell(grid, (e.args or {}).get("dataIndex"))
+            picked["fresh"] = picked["cell"] is not None
+            if picked["cell"] is not None:
+                header.set_text(scenario_text(picked["cell"]))
+
+        def menu_shown() -> None:
+            # The chart's contextmenu event reaches the server before the menu opens; without
+            # one (right-click beside the cells) there is nothing to pick, so close again.
+            if not picked["fresh"]:
+                menu.close()
+            picked["fresh"] = False
+
+        chart.on_point_click(left_click)
+        chart.on("chart:contextmenu", right_click, ["dataIndex", "componentType"])
+        with ui.context_menu() as menu:
+            header = ui.item_label("").props("header").classes("text-weight-bold")
+            ui.separator()
+            ui.menu_item("Set parameters to Single Scenario tab", lambda: pick(False))
+            ui.menu_item("Run this scenario now", lambda: pick(True))
+        menu.on("show", menu_shown)
+
+
+async def _maybe_await(result) -> None:
+    if inspect.isawaitable(result):
+        await result
 
 
 class _BatchStopped(Exception):
@@ -952,11 +1025,16 @@ class _BatchStopped(Exception):
 
 
 async def run_batch_analysis(
-    params: dict, results_container, spinner, stop_event: threading.Event | None = None
+    params: dict,
+    results_container,
+    spinner,
+    stop_event: threading.Event | None = None,
+    on_pick: ScenarioPick | None = None,
 ):
     """Run batch analysis in a background thread with progress tracking.
 
     Setting ``stop_event`` ends the run after the scenario currently simulating.
+    ``on_pick`` is called when a heatmap cell is picked (see ``_batch_heatmap``).
     """
     stop_event = stop_event or threading.Event()
     spinner.visible = True
@@ -1097,7 +1175,7 @@ async def run_batch_analysis(
         with ui.tab_panels(tabs, value=heatmap_tabs[0] if heatmap_tabs else None).classes("w-full"):
             for tab, (spec, grid) in zip(heatmap_tabs, result["heatmaps"], strict=True):
                 with ui.tab_panel(tab):
-                    _batch_heatmap(grid, spec)
+                    _batch_heatmap(grid, spec, on_pick)
 
         # Comparison table
         ui.label("Scenario Comparison").classes("text-h6 q-mt-lg")
@@ -1484,6 +1562,14 @@ def _only_on(element, tabs, name: str):
     return element.bind_visibility_from(tabs, "value", backward=lambda v: _tab_name(v) == name)
 
 
+def apply_scenario(inputs: dict, cell: tuple[float, float, float]) -> None:
+    """Set the System Specs solar / inverter / battery inputs to a batch scenario."""
+    solar, inverter, battery = cell
+    inputs["solar_power"].value = solar
+    inputs["inverter_power"].value = inverter
+    inputs["battery_capacity"].value = battery
+
+
 def _system_specs_section(inputs):
     with (
         ui.expansion("System Specs", icon="solar_power", value=True)
@@ -1687,12 +1773,24 @@ def index():
                         batch_results,
                         batch_spinner,
                         stop_event=batch_stop,
+                        on_pick=adopt_scenario,
                     )
                 finally:
                     batch_running = False
                     batch_button.set_text("Run Analysis")
                     batch_button.props("icon=play_arrow color=primary")
                     batch_button.enable()
+
+            async def adopt_scenario(cell: tuple[float, float, float], run: bool) -> None:
+                """Copy a batch heatmap cell into System Specs; optionally run it there."""
+                apply_scenario(inputs, cell)
+                if run:
+                    tabs.set_value(SINGLE_TAB)
+                    await run_single_simulation(
+                        build_shared_params(inputs), single_results, single_spinner
+                    )
+                else:
+                    ui.notify(f"Single Scenario set to {scenario_text(cell)}", type="positive")
 
             batch_button = ui.button("Run Analysis", icon="play_arrow", on_click=_toggle_batch)
             _only_on(batch_button.props("color=primary no-wrap"), tabs, BATCH_TAB)

@@ -6,9 +6,11 @@ import pytest
 from gui import (
     BATCH_HEATMAPS,
     PAYBACK_CAP_YEARS,
+    heatmap_cell,
     heatmap_chart_options,
     heatmap_csv_bytes,
     heatmap_grid,
+    scenario_text,
 )
 from power_flow_simulator import MultiScenarioAnalyzer
 
@@ -106,3 +108,91 @@ def test_real_batch_results_build_every_heatmap(batch_results):
         assert len(grid) == 4
         heatmap_chart_options(grid, spec)
         heatmap_csv_bytes(grid, spec)
+
+
+def test_heatmap_cell_maps_data_index_to_scenario():
+    grid = heatmap_grid(_results(), SPECS["savings"])
+    # grid rows sorted by (battery, solar): (5,0), (10,0), (5,10), (10,10)
+    assert heatmap_cell(grid, 1) == (10.0, 8.0, 0.0)
+    assert heatmap_cell(grid, 3) == (10.0, 5.0, 10.0)
+    assert heatmap_cell(grid, 4) is None
+    assert heatmap_cell(grid, None) is None
+    assert scenario_text((10.0, 8.0, 0.0)) == "Solar 10 kW · Inverter 8 kW · Battery 0 kWh"
+
+
+async def test_heatmap_click_and_context_menu_adopt_scenario(
+    user, minimal_production_csv, minimal_consumption_csv, tmp_path, monkeypatch
+):
+    """Left click sets System Specs; the right-click menu sets them or runs the scenario."""
+    import asyncio
+
+    from nicegui import ui
+
+    import gui
+
+    (tmp_path / "production.csv").write_bytes(minimal_production_csv.read_bytes())
+    (tmp_path / "consumption.csv").write_bytes(minimal_consumption_csv.read_bytes())
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(gui, "_find_data_file", lambda name: str(tmp_path / name))
+
+    await user.open("/")
+
+    def widget(kind, label):
+        return next(
+            e
+            for e in user.client.layout.descendants()
+            if isinstance(e, kind) and e.props.get("label") == label
+        )
+
+    widget(ui.input, "Solar range (kW)").value = "5, 10"
+    widget(ui.input, "Inverter range (kW)").value = "5"
+    widget(ui.input, "Battery range (kWh)").value = "0, 10"
+    user.find("Run Analysis").click()
+
+    def charts_on_page():
+        return [e for e in user.client.layout.descendants() if isinstance(e, ui.echart)]
+
+    for _ in range(300):
+        if charts_on_page():
+            break
+        await asyncio.sleep(0.05)
+    chart = min(charts_on_page(), key=lambda e: e.id)  # Savings tab
+    specs = {n: widget(ui.number, n) for n in ("Solar", "Inverter", "Battery")}
+
+    # Left click on cell 3 = solar 10, battery 10 (inverter 5)
+    charts = user.find(kind=ui.echart)
+    charts.elements = {chart}
+    charts.trigger(
+        "componentClick",
+        {
+            "componentType": "series",
+            "seriesType": "heatmap",
+            "seriesIndex": 0,
+            "seriesName": "",
+            "name": "",
+            "dataIndex": 3,
+            "data": {},
+            "value": [1, 1, 0],
+        },
+    )
+    await asyncio.sleep(0.1)
+    assert (specs["Solar"].value, specs["Inverter"].value, specs["Battery"].value) == (10, 5, 10)
+    await user.should_see("Single Scenario set to Solar 10 kW")
+
+    # Right click on cell 0 = solar 5, battery 0, then "Run this scenario now"
+    charts.trigger("chart:contextmenu", {"dataIndex": 0})
+    await user.should_see("Solar 5 kW · Inverter 5 kW · Battery 0 kWh")
+    section = min(user.find("Run this scenario now").elements, key=lambda e: e.id)
+    item = user.find(kind=ui.menu_item)
+    item.elements = {section.parent_slot.parent}  # the Savings chart's menu item
+    item.click()
+    for _ in range(200):
+        if specs["Solar"].value == 5 and any(
+            isinstance(e, ui.label) and e.text == "Annual Savings"
+            for e in user.client.layout.descendants()
+        ):
+            break
+        await asyncio.sleep(0.05)
+    assert (specs["Solar"].value, specs["Inverter"].value, specs["Battery"].value) == (5, 5, 0)
+    tabs = next(e for e in user.client.layout.descendants() if isinstance(e, ui.tabs))
+    assert gui._tab_name(tabs.value) == gui.SINGLE_TAB
