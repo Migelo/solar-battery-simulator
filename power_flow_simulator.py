@@ -3342,19 +3342,19 @@ def main():
 
     # System specifications
     parser.add_argument(
-        "--solar-power", type=float, default=8.5, help="Solar panel capacity in kW (default: 8.5)"
+        "--solar-power", type=float, default=400.0, help="Solar panel capacity in kW (default: 400)"
     )
     parser.add_argument(
         "--inverter-power",
         type=float,
-        default=8.0,
-        help="Inverter maximum AC output in kW (default: 8.0)",
+        default=300.0,
+        help="Inverter maximum AC output in kW (default: 300)",
     )
     parser.add_argument(
         "--battery-capacity",
         type=float,
-        default=10.0,
-        help="Battery storage capacity in kWh (default: 10.0)",
+        default=250.0,
+        help="Battery storage capacity in kWh (default: 250)",
     )
     parser.add_argument(
         "--battery-c-rate",
