@@ -64,3 +64,5 @@ hence absolute imports and the `if __name__ in {"__main__", "__mp_main__"}` guar
 `tests.yml`: ruff + mypy (`data_readers.py`), pytest on 3.12/3.13 + CLI smoke run, Windows tests +
 launcher start, Docker build. `windows-exe.yml`: builds the exe on every PR, attaches it to a
 release on `v*` tags. `main` is protected: branch → PR → squash auto-merge.
+Bulk mechanical commits (moves, reformatting) go in `.git-blame-ignore-revs`
+(`git config blame.ignoreRevsFile .git-blame-ignore-revs`; GitHub uses it automatically).
