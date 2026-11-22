@@ -2,8 +2,9 @@
 
 import pandas as pd
 
-from gui import POWER_FLOW_WINDOWS, power_flow_chart_options, power_flow_window, zoom_start_date
+from gui import power_flow_chart_options, power_flow_days, power_flow_range, zoom_dates
 
+# Interval-end labels of one year: 2024-01-01 00:15 .. 2025-01-01 00:00
 FIRST = pd.Timestamp("2024-01-01 00:15")
 LAST = pd.Timestamp("2025-01-01 00:00")
 
@@ -22,28 +23,37 @@ def _results(n=4 * 24 * 10):
     )
 
 
-class TestWindow:
-    def test_seven_days_from_date(self):
-        assert power_flow_window("2024-07-15", "7 days", FIRST, LAST) == (
+def test_days_midnight_label_belongs_to_previous_day():
+    assert power_flow_days(FIRST, LAST) == (pd.Timestamp("2024-01-01"), pd.Timestamp("2024-12-31"))
+
+
+class TestRange:
+    def test_end_date_inclusive(self):
+        assert power_flow_range("2024-07-15", "2024-07-21", FIRST, LAST) == (
             "2024-07-15 00:00",
             "2024-07-22 00:00",
         )
 
-    def test_whole_year_is_none(self):
-        assert power_flow_window("2024-07-15", "Whole year", FIRST, LAST) is None
+    def test_single_day(self):
+        assert power_flow_range("2024-07-15", "2024-07-15", FIRST, LAST) == (
+            "2024-07-15 00:00",
+            "2024-07-16 00:00",
+        )
 
-    def test_clamped_to_data_end(self):
-        start, end = power_flow_window("2024-12-30", "7 days", FIRST, LAST)
-        assert end == "2025-01-01 00:00"
-        assert start == "2024-12-25 00:00"
+    def test_swapped_dates_reordered(self):
+        assert power_flow_range("2024-07-21", "2024-07-15", FIRST, LAST)[0] == "2024-07-15 00:00"
 
-    def test_clamped_to_data_start(self):
-        start, _ = power_flow_window("2023-05-01", "1 day", FIRST, LAST)
-        assert start == "2024-01-01 00:15"
+    def test_clamped_to_data(self):
+        assert power_flow_range("2023-05-01", "2026-01-01", FIRST, LAST) == (
+            "2024-01-01 00:15",
+            "2025-01-01 00:00",
+        )
 
-    def test_all_windows_handled(self):
-        for window in POWER_FLOW_WINDOWS:
-            power_flow_window("2024-03-01", window, FIRST, LAST)
+    def test_start_after_data_still_shows_last_day(self):
+        assert power_flow_range("2025-03-01", "2025-03-05", FIRST, LAST) == (
+            "2024-12-31 00:00",
+            "2025-01-01 00:00",
+        )
 
 
 class TestChartOptions:
@@ -59,23 +69,27 @@ class TestChartOptions:
         for dz in opts["dataZoom"]:
             assert dz["xAxisIndex"] == [0, 1, 2]
             assert dz["startValue"] == "2024-01-01 00:15"
-            assert dz["endValue"] == "2024-01-08 00:15"
-
-    def test_whole_year_zoom(self):
-        opts = power_flow_chart_options(_results(), kw_factor=4, window="Whole year")
-        assert opts["dataZoom"][0]["start"] == 0 and opts["dataZoom"][0]["end"] == 100
+            assert dz["endValue"] == "2024-01-08 00:00"
 
 
-class TestZoomStartDate:
+class TestZoomDates:
     def test_slider_percent(self):
-        assert zoom_start_date({"start": 50}, FIRST, LAST) == "2024-07-02"
+        assert zoom_dates({"start": 50, "end": 100}, FIRST, LAST) == ("2024-07-02", "2024-12-31")
 
     def test_inside_zoom_batch(self):
-        assert zoom_start_date({"batch": [{"start": 0, "end": 2}]}, FIRST, LAST) == "2024-01-01"
+        assert zoom_dates({"batch": [{"start": 0, "end": 2}]}, FIRST, LAST) == (
+            "2024-01-01",
+            "2024-01-08",
+        )
+
+    def test_end_never_before_start(self):
+        start, end = zoom_dates({"start": 50, "end": 50}, FIRST, LAST)
+        assert start == end
 
     def test_own_dispatch_ignored(self):
         event = {"startValue": "2024-07-15 00:00", "endValue": "2024-07-22 00:00"}
-        assert zoom_start_date(event, FIRST, LAST) is None
+        assert zoom_dates(event, FIRST, LAST) is None
 
-    def test_missing_start_ignored(self):
-        assert zoom_start_date({}, FIRST, LAST) is None
+    def test_missing_percent_ignored(self):
+        assert zoom_dates({}, FIRST, LAST) is None
+        assert zoom_dates({"start": 10}, FIRST, LAST) is None

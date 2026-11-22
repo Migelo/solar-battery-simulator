@@ -470,16 +470,8 @@ def _b64(data: bytes) -> str:
     return base64.b64encode(data).decode()
 
 
-# Window lengths offered above the power flow chart (days; None = whole year)
-POWER_FLOW_WINDOWS: dict[str, int | None] = {
-    "1 day": 1,
-    "3 days": 3,
-    "7 days": 7,
-    "1 month": 30,
-    "3 months": 91,
-    "Whole year": None,
-}
-DEFAULT_POWER_FLOW_WINDOW = "7 days"
+# Days shown when the power flow chart first opens (the user picks start/end dates after)
+POWER_FLOW_INITIAL_DAYS = 7
 _CHART_TIME_FMT = "%Y-%m-%d %H:%M"
 # ECharts cascading time-axis labels (picked by tick granularity)
 _TIME_LABELS = {
@@ -497,27 +489,32 @@ _CHART_AXIS = {
 }
 
 
-def power_flow_window(
-    start: str, window: str, first: pd.Timestamp, last: pd.Timestamp
-) -> tuple[str, str] | None:
-    """Zoom range (chart time strings) for ``window`` starting on date ``start``.
+def power_flow_days(first: pd.Timestamp, last: pd.Timestamp) -> tuple[pd.Timestamp, pd.Timestamp]:
+    """First and last calendar day covered by interval-end labels ``first``..``last``.
 
-    The range is clamped to ``first``..``last``; ``None`` means the whole data range.
+    A label at midnight closes the previous day's last interval, so it belongs to that day.
     """
-    days = POWER_FLOW_WINDOWS.get(window)
-    if days is None:
-        return None
-    span = pd.Timedelta(days=days)
-    begin = max(pd.Timestamp(start), first.normalize())
-    if begin + span > last:
-        begin = max(first, last - span)
-    begin = max(begin, first)
-    end = min(begin + span, last)
-    return begin.strftime(_CHART_TIME_FMT), end.strftime(_CHART_TIME_FMT)
+    return first.normalize(), (last - pd.Timedelta(minutes=1)).normalize()
+
+
+def power_flow_range(
+    start: str, end: str, first: pd.Timestamp, last: pd.Timestamp
+) -> tuple[str, str]:
+    """Zoom range (chart time strings) showing the days ``start``..``end``, both inclusive.
+
+    Swapped dates are reordered and the range is clamped to the data ``first``..``last``.
+    """
+    day = pd.Timedelta(days=1)
+    s, e = sorted((pd.Timestamp(start).normalize(), pd.Timestamp(end).normalize()))
+    begin = min(max(s, first), last - day)
+    stop = min(e + day, last)
+    if stop <= begin:
+        stop = min(begin + day, last)
+    return begin.strftime(_CHART_TIME_FMT), stop.strftime(_CHART_TIME_FMT)
 
 
 def power_flow_chart_options(
-    results: pd.DataFrame, kw_factor: float, window: str = DEFAULT_POWER_FLOW_WINDOW
+    results: pd.DataFrame, kw_factor: float, initial_days: int = POWER_FLOW_INITIAL_DAYS
 ) -> dict:
     """ECharts options for the full-period power flow plot (power, SOC, grid; linked zoom)."""
     times = pd.to_datetime(results["datetime"])
@@ -532,7 +529,13 @@ def power_flow_chart_options(
     ).round(2)
     values.insert(0, "time", times.dt.strftime(_CHART_TIME_FMT))
     first, last = times.min(), times.max()
-    zoom = power_flow_window(first.strftime("%Y-%m-%d"), window, first, last)
+    first_day = power_flow_days(first, last)[0]
+    zoom = power_flow_range(
+        str(first_day.date()),
+        str((first_day + pd.Timedelta(days=initial_days - 1)).date()),
+        first,
+        last,
+    )
 
     def series(name, dim, color, grid, area=True):
         return {
@@ -550,7 +553,7 @@ def power_flow_chart_options(
 
     grids = [("8%", "28%"), ("44%", "18%"), ("70%", "18%")]
     y_names = ["Power (kW)", "Battery SOC (%)", "Grid (kW)"]
-    zoom_range = {"startValue": zoom[0], "endValue": zoom[1]} if zoom else {"start": 0, "end": 100}
+    zoom_range = {"startValue": zoom[0], "endValue": zoom[1]}
     return {
         "animation": False,
         "backgroundColor": "transparent",
@@ -616,92 +619,116 @@ def power_flow_chart_options(
     }
 
 
-def zoom_start_date(event: dict, first: pd.Timestamp, last: pd.Timestamp) -> str | None:
-    """Start date (``YYYY-MM-DD``) of a manual ECharts ``datazoom`` event, else ``None``.
+def zoom_dates(event: dict, first: pd.Timestamp, last: pd.Timestamp) -> tuple[str, str] | None:
+    """Start and end dates (``YYYY-MM-DD``, inclusive) of a manual ``datazoom`` event.
 
-    Slider events carry ``start`` (percent of the data range), inside zoom/pan a ``batch`` of
-    them. Zooms dispatched by the date selector itself carry ``startValue`` and are ignored.
+    Slider events carry ``start``/``end`` (percent of the data range), inside zoom/pan a
+    ``batch`` of them. Zooms dispatched by the date fields themselves carry ``startValue``
+    and are ignored (``None``), as are events without percentages.
     """
     zoom = (event.get("batch") or [event])[0]
-    if "startValue" in zoom or not isinstance(zoom.get("start"), int | float):
+    if "startValue" in zoom:
         return None
-    t = first + (last - first) * (zoom["start"] / 100)
-    return t.strftime("%Y-%m-%d")
+    start, end = zoom.get("start"), zoom.get("end")
+    if not isinstance(start, int | float) or not isinstance(end, int | float):
+        return None
+    span = last - first
+    t0 = first + span * (start / 100)
+    t1 = first + span * (end / 100) - pd.Timedelta(minutes=1)  # midnight end = previous day
+    d0, d1 = t0.normalize(), max(t1.normalize(), t0.normalize())
+    return d0.strftime("%Y-%m-%d"), d1.strftime("%Y-%m-%d")
+
+
+def _date_field(label: str, value: str, min_d: str, max_d: str) -> ui.input:
+    """Date input (``YYYY-MM-DD``) with a calendar popup limited to ``min_d``..``max_d``."""
+    with ui.input(label, value=value).props("dense outlined").classes("w-40") as field:
+        with ui.menu().props("no-parent-event") as menu:
+            ui.date(mask="YYYY-MM-DD").bind_value(field).props(
+                f":options=\"d => d >= '{min_d}' && d <= '{max_d}'\""
+                f' default-year-month="{min_d[:7]}"'
+            ).on_value_change(menu.close)
+        with field.add_slot("append"):
+            ui.icon("edit_calendar").on("click", menu.open).classes("cursor-pointer")
+    return field
 
 
 def _power_flow_chart(options: dict) -> None:
-    """Date/window selector above a zoomable full-period power flow chart."""
+    """Start/end date selector above a zoomable full-period power flow chart."""
     source = options["dataset"]["source"]
     first, last = pd.Timestamp(source[0][0]), pd.Timestamp(source[-1][0])
-    min_d, max_d = first.strftime("%Y/%m/%d"), last.strftime("%Y/%m/%d")
+    first_day, last_day = power_flow_days(first, last)
+    zoom = options["dataZoom"][0]
+    init_start = pd.Timestamp(zoom["startValue"]).strftime("%Y-%m-%d")
+    init_end = (pd.Timestamp(zoom["endValue"]) - pd.Timedelta(minutes=1)).strftime("%Y-%m-%d")
 
-    syncing = False  # date field updated from the chart: don't zoom the chart back
+    syncing = False  # fields updated programmatically: don't re-zoom from their change events
+
+    def set_dates(start: str, end: str) -> None:
+        nonlocal syncing
+        syncing = True
+        try:
+            start_input.value, end_input.value = start, end
+        finally:
+            syncing = False
 
     def apply(_=None) -> None:
         if syncing:
             return
-        rng = power_flow_window(date_input.value or min_d, window_select.value, first, last)
-        action = (
-            {"type": "dataZoom", "startValue": rng[0], "endValue": rng[1]}
-            if rng
-            else {"type": "dataZoom", "start": 0, "end": 100}
+        try:
+            rng = power_flow_range(start_input.value, end_input.value, first, last)
+        except ValueError:  # half-typed date
+            return
+        chart.run_chart_method(
+            "dispatchAction", {"type": "dataZoom", "startValue": rng[0], "endValue": rng[1]}
         )
-        chart.run_chart_method("dispatchAction", action)
 
     def shift(direction: int) -> None:
-        days = POWER_FLOW_WINDOWS.get(window_select.value) or 0
-        if not days:
+        try:
+            s, e = sorted((pd.Timestamp(start_input.value), pd.Timestamp(end_input.value)))
+        except ValueError:
             return
-        new = pd.Timestamp(date_input.value or min_d) + pd.Timedelta(days=direction * days)
-        new = min(max(new, first.normalize()), last.normalize())
-        date_input.value = new.strftime("%Y-%m-%d")  # triggers apply()
+        span = e - s + pd.Timedelta(days=1)
+        s, e = s + direction * span, e + direction * span
+        if s < first_day:
+            s, e = first_day, first_day + span - pd.Timedelta(days=1)
+        if e > last_day:
+            s, e = max(first_day, last_day - span + pd.Timedelta(days=1)), last_day
+        set_dates(str(s.date()), str(e.date()))
+        apply()
 
+    def whole_period() -> None:
+        set_dates(str(first_day.date()), str(last_day.date()))
+        apply()
+
+    min_d, max_d = first_day.strftime("%Y/%m/%d"), last_day.strftime("%Y/%m/%d")
     with ui.row().classes("items-center q-gutter-sm q-mt-sm"):
         ui.button(icon="chevron_left", on_click=lambda: shift(-1)).props(
             "flat round dense"
-        ).tooltip("Previous window")
-        with (
-            ui.input("Start date", value=first.strftime("%Y-%m-%d"))
-            .props("dense outlined")
-            .classes("w-40") as date_input
-        ):
-            with ui.menu().props("no-parent-event") as menu:
-                ui.date(mask="YYYY-MM-DD").bind_value(date_input).props(
-                    f":options=\"d => d >= '{min_d}' && d <= '{max_d}'\""
-                    f' default-year-month="{first.strftime("%Y/%m")}"'
-                ).on_value_change(menu.close)
-            with date_input.add_slot("append"):
-                ui.icon("edit_calendar").on("click", menu.open).classes("cursor-pointer")
+        ).tooltip("Previous period of the same length")
+        start_input = _date_field("Start date", init_start, min_d, max_d)
+        end_input = _date_field("End date", init_end, min_d, max_d)
         ui.button(icon="chevron_right", on_click=lambda: shift(1)).props(
             "flat round dense"
-        ).tooltip("Next window")
-        window_select = (
-            ui.select(list(POWER_FLOW_WINDOWS), value=DEFAULT_POWER_FLOW_WINDOW, label="Window")
-            .props("dense outlined")
-            .classes("w-36")
+        ).tooltip("Next period of the same length")
+        ui.button("Whole year", icon="zoom_out_map", on_click=whole_period).props(
+            "flat dense no-caps"
         )
         ui.label("Scroll / drag on the chart or use the slider to zoom").classes(
             "text-caption text-grey"
         )
     chart = ui.echart(options).classes("w-full").style("height: 680px")
-    date_input.on_value_change(apply)
-    window_select.on_value_change(apply)
+    start_input.on_value_change(apply)
+    end_input.on_value_change(apply)
 
     def follow_zoom(e) -> None:
-        nonlocal syncing
-        new = zoom_start_date(e.args or {}, first, last)
-        if new is None or new == date_input.value:
-            return
-        syncing = True
-        try:
-            date_input.value = new
-        finally:
-            syncing = False
+        dates = zoom_dates(e.args or {}, first, last)
+        if dates and dates != (start_input.value, end_input.value):
+            set_dates(*dates)
 
     chart.on(
         "chart:datazoom",
         follow_zoom,
-        ["start", "batch", "startValue"],
+        ["start", "end", "batch", "startValue"],
         throttle=0.2,
         leading_events=False,
     )
