@@ -54,8 +54,11 @@ License: MIT
 """
 
 import argparse
+import contextlib
 import datetime
+import functools
 import hashlib
+import io
 import os
 import warnings
 from collections.abc import Callable
@@ -63,12 +66,9 @@ from dataclasses import dataclass
 from itertools import product
 from typing import Any
 
-import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
-import seaborn as sns
 from joblib import Memory
-from scipy.optimize import differential_evolution
 from tqdm import tqdm
 
 from solar_battery_simulator.data_readers import (
@@ -239,6 +239,97 @@ def slovenian_holidays(year: int) -> set[datetime.date]:
         easter + datetime.timedelta(days=49),  # Whit Sunday
     }
     return days
+
+
+@functools.lru_cache(maxsize=4)
+def _load_aligned_inputs(
+    production_file: str,
+    consumption_file: str,
+    export_price_file: str | None,
+    price_region: str,
+    export_price_alignment: str,
+    input_fingerprint: str,  # noqa: ARG001 - cache key only: content changes reload
+) -> tuple[pd.DataFrame, str]:
+    """Memoized ``_build_aligned_inputs``: (frame, console output of the build). Callers must
+    copy the frame before modifying it and print the output so every load logs the same."""
+    log = io.StringIO()
+    try:
+        with contextlib.redirect_stdout(log):
+            df = _build_aligned_inputs(
+                production_file,
+                consumption_file,
+                export_price_file,
+                price_region,
+                export_price_alignment,
+            )
+    except Exception:
+        print(log.getvalue(), end="")  # keep warnings that preceded the error
+        raise
+    return df, log.getvalue()
+
+
+def _build_aligned_inputs(
+    production_file: str,
+    consumption_file: str,
+    export_price_file: str | None,
+    price_region: str,
+    export_price_alignment: str,
+) -> pd.DataFrame:
+    """Production + consumption (+ export prices) aligned on the 15-min grid, with calendar
+    and peak-hour columns."""
+    # Load inputs (CSV / XLSX / XLS; consumption in legacy or smart-meter layout)
+    production_df = load_production(production_file)
+    consumption_df = load_consumption(consumption_file)
+
+    # Files ship with different lengths (leap-year consumption vs non-leap
+    # production). Align positionally on the head; warn so the dropped tail
+    # day is visible instead of silent.
+    if len(production_df) != len(consumption_df):
+        print(
+            f"Warning: production has {len(production_df)} intervals, "
+            f"consumption has {len(consumption_df)} — truncating to "
+            f"{min(len(production_df), len(consumption_df))}."
+        )
+    min_records = min(len(production_df), len(consumption_df))
+    production_df = production_df.iloc[:min_records].copy()
+    consumption_df = consumption_df.iloc[:min_records].copy()
+
+    # Create aligned dataset
+    df = pd.DataFrame(
+        {
+            "datetime": consumption_df["datetime"],
+            "baseline_solar_kw": production_df["solar_power_kw"],
+            "consumption_kwh": consumption_df["consumption_kwh"],
+            "consumption_kw": consumption_df["consumption_kw"],
+            "transmission_block": consumption_df["transmission_block"],
+        }
+    )
+
+    # Market export prices, aligned on the 15-min input grid
+    if export_price_file:
+        prices = load_export_prices(export_price_file, region=price_region)
+        df["export_price_eur_kwh"] = align_export_prices(
+            df["datetime"],
+            prices,
+            interval_minutes=15,
+            method=export_price_alignment,
+        ).to_numpy()
+
+    df["hour"] = df["datetime"].dt.hour
+    df["weekday"] = df["datetime"].dt.weekday  # 0=Monday, 6=Sunday
+    df["month"] = df["datetime"].dt.month
+
+    # Slovenian work-free holidays (off-peak pricing) for every year in the data
+    years = df["datetime"].dt.year.unique()
+    holiday_dates = set().union(*(slovenian_holidays(int(y)) for y in years))
+    df["is_holiday"] = df["datetime"].dt.date.isin(holiday_dates)
+
+    # Peak hours: 6am-10pm on weekdays, excluding holidays
+    df["is_peak_hour"] = (
+        (df["hour"] >= 6) & (df["hour"] < 22) & (df["weekday"] < 5) & (~df["is_holiday"])
+    )
+
+    return df
 
 
 class PowerFlowSimulator:
@@ -518,60 +609,18 @@ class PowerFlowSimulator:
         """
         print("\nLoading and aligning data...")
 
-        # Load inputs (CSV / XLSX / XLS; consumption in legacy or smart-meter layout)
-        production_df = load_production(self.production_file)
-        consumption_df = load_consumption(self.consumption_file)
-
-        # Files ship with different lengths (leap-year consumption vs non-leap
-        # production). Align positionally on the head; warn so the dropped tail
-        # day is visible instead of silent.
-        if len(production_df) != len(consumption_df):
-            print(
-                f"Warning: production has {len(production_df)} intervals, "
-                f"consumption has {len(consumption_df)} — truncating to "
-                f"{min(len(production_df), len(consumption_df))}."
-            )
-        min_records = min(len(production_df), len(consumption_df))
-        production_df = production_df.iloc[:min_records].copy()
-        consumption_df = consumption_df.iloc[:min_records].copy()
-
-        # Create aligned dataset
-        self.df = pd.DataFrame(
-            {
-                "datetime": consumption_df["datetime"],
-                "baseline_solar_kw": production_df["solar_power_kw"],
-                "consumption_kwh": consumption_df["consumption_kwh"],
-                "consumption_kw": consumption_df["consumption_kw"],
-                "transmission_block": consumption_df["transmission_block"],
-            }
+        # Parsing and aligning the inputs dominates per-scenario cost in batch mode,
+        # so it is memoized per input set; each simulator works on its own copy.
+        aligned, load_log = _load_aligned_inputs(
+            self.production_file,
+            self.consumption_file,
+            self.export_price_file,
+            self.price_region,
+            self.export_price_alignment,
+            _input_fingerprint(self.production_file, self.consumption_file, self.export_price_file),
         )
-
-        # Market export prices, aligned on the 15-min input grid
-        if self.export_price_file:
-            prices = load_export_prices(self.export_price_file, region=self.price_region)
-            self.df["export_price_eur_kwh"] = align_export_prices(
-                self.df["datetime"],
-                prices,
-                interval_minutes=15,
-                method=self.export_price_alignment,
-            ).to_numpy()
-
-        self.df["hour"] = self.df["datetime"].dt.hour
-        self.df["weekday"] = self.df["datetime"].dt.weekday  # 0=Monday, 6=Sunday
-        self.df["month"] = self.df["datetime"].dt.month
-
-        # Slovenian work-free holidays (off-peak pricing) for every year in the data
-        years = self.df["datetime"].dt.year.unique()
-        holiday_dates = set().union(*(slovenian_holidays(int(y)) for y in years))
-        self.df["is_holiday"] = self.df["datetime"].dt.date.isin(holiday_dates)
-
-        # Peak hours: 6am-10pm on weekdays, excluding holidays
-        self.df["is_peak_hour"] = (
-            (self.df["hour"] >= 6)
-            & (self.df["hour"] < 22)
-            & (self.df["weekday"] < 5)
-            & (~self.df["is_holiday"])
-        )
+        print(load_log, end="")
+        self.df = aligned.copy()
 
         print(
             f"Loaded {len(self.df)} data points from {self.df['datetime'].min()} to {self.df['datetime'].max()}"
@@ -755,8 +804,22 @@ class PowerFlowSimulator:
         max_charge_kwh_per_interval = self.battery_charge_power_kw * interval_hours
         max_discharge_kwh_per_interval = self.battery_discharge_power_kw * interval_hours
 
-        # Storage for results
-        results = []
+        # Plain Python lists: indexing them is far cheaper than DataFrame.iterrows()
+        solar_series = self.df["solar_generation_kwh"].tolist()
+        consumption_series = self.df["consumption_kwh"].tolist()
+        block_series = self.df["transmission_block"].astype(int).tolist()
+        datetimes = self.df["datetime"].array
+        n_intervals = len(self.df)
+        battery_capacity_kwh = self.battery_capacity_kwh
+
+        # Storage for results, one list per output column
+        soc_kwh_out = [0.0] * n_intervals
+        soc_percent_out = [0.0] * n_intervals
+        charge_out = [0.0] * n_intervals
+        discharge_out = [0.0] * n_intervals
+        smoothing_out = [0.0] * n_intervals
+        import_out = [0.0] * n_intervals
+        export_out = [0.0] * n_intervals
 
         # Initialize power smoothing tracking
         max_power_by_block = {
@@ -771,10 +834,10 @@ class PowerFlowSimulator:
         # Track peak smoothing failures
         smoothing_failures = []
 
-        for _, row in self.df.iterrows():
-            solar_generation = row["solar_generation_kwh"]
-            consumption = row["consumption_kwh"]
-            transmission_block = int(row["transmission_block"])
+        for i in range(n_intervals):
+            solar_generation = solar_series[i]
+            consumption = consumption_series[i]
+            transmission_block = block_series[i]
 
             # Initialize interval values
             battery_charge = 0.0
@@ -896,7 +959,7 @@ class PowerFlowSimulator:
                 # Record this failure
                 smoothing_failures.append(
                     {
-                        "timestamp": row["datetime"],
+                        "timestamp": datetimes[i],
                         "block": transmission_block,
                         "target_kw": target_power,
                         "actual_kw": final_grid_power_kw,
@@ -911,26 +974,32 @@ class PowerFlowSimulator:
             soc_kwh = max(0, min(self.battery_capacity_kwh, soc_kwh))
 
             # Store results
-            results.append(
-                {
-                    "datetime": row["datetime"],
-                    "solar_generation_kwh": solar_generation,
-                    "consumption_kwh": consumption,
-                    "battery_soc_kwh": soc_kwh,
-                    "battery_soc_percent": (soc_kwh / self.battery_capacity_kwh) * 100
-                    if self.battery_capacity_kwh > 0
-                    else 0,
-                    "battery_charge_kwh": battery_charge,
-                    "battery_discharge_kwh": battery_discharge,
-                    "power_smoothing_discharge_kwh": power_smoothing_discharge,
-                    "grid_import_kwh": grid_import,
-                    "grid_export_kwh": grid_export,
-                    "transmission_block": row["transmission_block"],
-                }
+            soc_kwh_out[i] = soc_kwh
+            soc_percent_out[i] = (
+                (soc_kwh / battery_capacity_kwh) * 100 if battery_capacity_kwh > 0 else 0
             )
+            charge_out[i] = battery_charge
+            discharge_out[i] = battery_discharge
+            smoothing_out[i] = power_smoothing_discharge
+            import_out[i] = grid_import
+            export_out[i] = grid_export
 
         # Convert to DataFrame
-        self.simulation_results = pd.DataFrame(results)
+        self.simulation_results = pd.DataFrame(
+            {
+                "datetime": datetimes,
+                "solar_generation_kwh": solar_series,
+                "consumption_kwh": consumption_series,
+                "battery_soc_kwh": soc_kwh_out,
+                "battery_soc_percent": soc_percent_out,
+                "battery_charge_kwh": charge_out,
+                "battery_discharge_kwh": discharge_out,
+                "power_smoothing_discharge_kwh": smoothing_out,
+                "grid_import_kwh": import_out,
+                "grid_export_kwh": export_out,
+                "transmission_block": self.df["transmission_block"].to_numpy(),
+            }
+        )
 
         # Store power smoothing results
         if self.enable_power_smoothing:
@@ -1110,30 +1179,21 @@ class PowerFlowSimulator:
         if self.export_fee_eur_mwh:
             print(f"Export fee: €{self.export_fee_eur_mwh:.2f}/MWh")
 
-        # Calculate costs with battery system using transmission block pricing
-        def get_transmission_cost(row):
-            block_num = int(row["transmission_block"])
-            return self.transmission_costs.get(f"block{block_num}", 0.0)
+        # Per-interval import price: energy (peak/off-peak or flat) + transmission block rate
+        blocks = self.df["transmission_block"].astype(int)
+        transmission_price = blocks.map(
+            lambda block: self.transmission_costs.get(f"block{block}", 0.0)
+        ).to_numpy(dtype=float)
+        if use_time_based_pricing:
+            energy_price = np.where(
+                self.df["is_peak_hour"].to_numpy(dtype=bool), peak_price, off_peak_price
+            )
+        else:
+            energy_price = np.full(len(self.df), base_price)
+        import_price = energy_price + transmission_price
 
-        # Grid import cost with time-based and transmission block pricing
-        def get_total_price(row):
-            transmission_cost = get_transmission_cost(row)
-            if use_time_based_pricing:
-                # Get base price from simulation results (need is_peak_hour from original data)
-                datetime_index = row.name  # Get the row index
-                is_peak = (
-                    self.df.iloc[datetime_index]["is_peak_hour"]
-                    if datetime_index < len(self.df)
-                    else False
-                )
-                base_price_for_row = peak_price if is_peak else off_peak_price
-            else:
-                base_price_for_row = base_price
-            return base_price_for_row + transmission_cost
-
-        grid_import_cost = self.simulation_results.apply(
-            lambda row: row["grid_import_kwh"] * get_total_price(row), axis=1
-        ).sum()
+        grid_import_kwh = self.simulation_results["grid_import_kwh"].to_numpy()
+        grid_import_cost = float((grid_import_kwh * import_price[: len(grid_import_kwh)]).sum())
 
         # Export revenue (no transmission cost on exports). Market prices can be
         # negative, in which case exporting in that interval costs money.
@@ -1168,18 +1228,8 @@ class PowerFlowSimulator:
         system_ove_spte_cost = annual_ove_spte_cost
         system_power_fee_cost = annual_monthly_power_fees
 
-        # Calculate baseline cost (no battery, no solar) with transmission costs
-        # def get_baseline_total_price(row):
-        #     transmission_cost = self.transmission_costs[f"block{int(row['transmission_block'])}"]
-        #     if use_time_based_pricing:
-        #         base_price_for_row = peak_price if row['is_peak_hour'] else off_peak_price
-        #     else:
-        #         base_price_for_row = base_price
-        #     return base_price_for_row + transmission_cost
-
-        baseline_grid_cost = self.df.apply(
-            lambda row: row["consumption_kwh"] * get_total_price(row), axis=1
-        ).sum()
+        # Baseline (no battery, no solar): all consumption imported at the same prices
+        baseline_grid_cost = float((self.df["consumption_kwh"].to_numpy() * import_price).sum())
 
         # Calculate block-wise max power for monthly fees
         max_power_by_block = self.calculate_block_power("consumption_kwh")
@@ -1408,6 +1458,8 @@ class PowerFlowSimulator:
 
     def create_power_flow_visualization(self, days_to_show: int = 7) -> None:
         """Create visualization of power flows over time"""
+        import matplotlib.pyplot as plt
+
         if self.simulation_results is None:
             print("No simulation results available. Run simulation first.")
             return
@@ -2164,6 +2216,9 @@ class MultiScenarioAnalyzer:
 
     def create_savings_heatmap(self):
         """Create heatmap of annual savings across solar and battery combinations"""
+        import matplotlib.pyplot as plt
+        import seaborn as sns
+
         if not self.results:
             print("No results available. Run simulations first.")
             return
@@ -2207,6 +2262,9 @@ class MultiScenarioAnalyzer:
 
     def create_roi_heatmap(self):
         """Create heatmap of payback periods (ROI analysis)"""
+        import matplotlib.pyplot as plt
+        import seaborn as sns
+
         if not self.results:
             print("No results available. Run simulations first.")
             return
@@ -2256,6 +2314,9 @@ class MultiScenarioAnalyzer:
 
     def create_self_sufficiency_heatmap(self):
         """Create heatmap of self-sufficiency percentages"""
+        import matplotlib.pyplot as plt
+        import seaborn as sns
+
         if not self.results:
             print("No results available. Run simulations first.")
             return
@@ -2301,6 +2362,9 @@ class MultiScenarioAnalyzer:
 
     def create_npv_heatmap(self):
         """Create heatmap of Net Present Value over 20 years"""
+        import matplotlib.pyplot as plt
+        import seaborn as sns
+
         if not self.results:
             print("No results available. Run simulations first.")
             return
@@ -2397,6 +2461,8 @@ class MultiScenarioAnalyzer:
 
     def create_pareto_analysis(self):
         """Create Pareto frontier analysis (cost vs performance)"""
+        import matplotlib.pyplot as plt
+
         if not self.results:
             print("No results available. Run simulations first.")
             return
@@ -2449,6 +2515,8 @@ class MultiScenarioAnalyzer:
 
     def create_soc_time_plot(self, days_to_show=365):
         """Create plot showing SOC vs time for all battery combinations"""
+        import matplotlib.pyplot as plt
+
         if not self.results:
             print("No results available. Run simulations first.")
             return
@@ -2585,6 +2653,8 @@ class MultiScenarioAnalyzer:
             # soc_700kW_solar_650kW_inverter_monthly.png
             # Each showing 12 monthly SOC patterns
         """
+        import matplotlib.pyplot as plt
+
         if not self.results:
             print("No results available. Run simulations first.")
             return
@@ -2853,6 +2923,7 @@ class MultiScenarioAnalyzer:
         Returns:
             Dict containing optimal configuration and optimization results
         """
+        from scipy.optimize import differential_evolution
 
         print(f"\n{'=' * 70}")
         print("DIFFERENTIAL EVOLUTION OPTIMIZATION FOR NPV MAXIMIZATION")
@@ -3102,6 +3173,8 @@ class MultiScenarioAnalyzer:
 
     def _save_optimization_plot(self, result):
         """Save optimization convergence and parameter evolution plots"""
+        import matplotlib.pyplot as plt
+
         try:
             # Create comprehensive optimization visualization
             plt.figure(figsize=(15, 12))

@@ -91,3 +91,42 @@ def test_batch_cache_invalidated_when_file_replaced(tmp_path):
         second["simulation_results"]["grid_import_kwh"].sum()
         > first["simulation_results"]["grid_import_kwh"].sum()
     )
+
+
+def test_loaded_inputs_reloaded_when_file_replaced(tmp_path):
+    """The in-memory input cache is keyed on file contents, not just the path."""
+    prod, cons = _write_day(tmp_path, "2025-03-12", power_kw=2.0)
+    first = PowerFlowSimulator(production_file=prod, consumption_file=cons)
+    first.load_and_align_data()
+
+    _write_day(tmp_path, "2025-03-12", power_kw=5.0)  # same path, new contents
+    second = PowerFlowSimulator(production_file=prod, consumption_file=cons)
+    second.load_and_align_data()
+
+    assert first.df["consumption_kwh"].sum() == 96 * 0.5
+    assert second.df["consumption_kwh"].sum() == 96 * 1.25
+
+
+def test_cached_inputs_not_mutated_by_heating_load(tmp_path):
+    """A simulator modifying its frame (heating load) must not leak into later loads."""
+    prod, cons = _write_day(tmp_path, "2025-01-15")
+    heated = PowerFlowSimulator(
+        production_file=prod,
+        consumption_file=cons,
+        heating_config={"heating_kwh": 1000.0, "start_hour": 7, "end_hour": 0},
+    )
+    heated.load_and_align_data()
+    plain = PowerFlowSimulator(production_file=prod, consumption_file=cons)
+    plain.load_and_align_data()
+
+    assert heated.df["consumption_kwh"].sum() > plain.df["consumption_kwh"].sum()
+    assert plain.df["consumption_kwh"].sum() == 96 * 0.5
+
+
+def test_load_warnings_repeat_on_cached_loads(tmp_path, capsys):
+    """Loader output (e.g. the length-mismatch warning) is printed on every load."""
+    prod, cons = _write_day(tmp_path, "2025-03-12")
+    pd.DataFrame({"id": range(1, 98), "solar_power_kw": [0.0] * 97}).to_csv(prod, index=False)
+    for _ in range(2):
+        PowerFlowSimulator(production_file=prod, consumption_file=cons).load_and_align_data()
+    assert capsys.readouterr().out.count("Warning: production has 97 intervals") == 2
