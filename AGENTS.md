@@ -42,6 +42,9 @@ hence absolute imports and the `if __name__ in {"__main__", "__mp_main__"}` guar
 - **Batch cache** (joblib, `_cached_batch_simulation_func`): anything that changes results must be
   in the key — inputs are fingerprinted by SHA-256, plus reference power, export fee, price file and
   alignment. Add new parameters to it.
+- **Input cache**: `_load_aligned_inputs` memoizes the parsed, aligned inputs in-process (keyed
+  on the same fingerprint) and replays their console output; `load_and_align_data` copies the
+  frame, so never mutate the cached one.
 - **Investment**: `total_investment` = gross − subsidy drives payback, loan and NPV; maintenance
   (1 %) stays on gross. `loan_years <= 0` = cash at year 0.
 - **Tariffs**: 5 blocks, high season Nov–Mar; OVE-SPTE = `4 × Block1_max + 8 × Block2_max`.
