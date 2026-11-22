@@ -176,7 +176,7 @@ class TestGui:
             "subsidy_battery_per_kwh": 50,
             "subsidy_battery_basis": "inverter",
             "subsidy_cap_enabled": True,
-            "subsidy_cap_fraction": 0.25,
+            "subsidy_cap_percent": 25,
         }
         cfg = gui._subsidy_config(params)
         assert cfg.solar_enabled and cfg.solar_eur_per_kw == 100

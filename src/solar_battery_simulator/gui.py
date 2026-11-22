@@ -1383,10 +1383,10 @@ DEFAULTS = {
     "subsidy_battery_enabled": True,
     "subsidy_battery_per_kwh": 0.0,
     "subsidy_battery_min_ratio": 0.5,
-    "subsidy_battery_max_ratio": 2.5,
+    "subsidy_battery_max_ratio": 2.0,
     "subsidy_battery_basis": "solar",
     "subsidy_cap_enabled": False,
-    "subsidy_cap_fraction": 0.5,
+    "subsidy_cap_percent": 50.0,
 }
 
 SUBSIDY_BASIS_LABELS = {
@@ -1417,7 +1417,7 @@ def _subsidy_config(params: dict) -> SubsidyConfig:
         battery_max_ratio=num("subsidy_battery_max_ratio"),
         battery_basis=params.get("subsidy_battery_basis") or DEFAULTS["subsidy_battery_basis"],
         cap_enabled=bool(params.get("subsidy_cap_enabled")),
-        cap_fraction=num("subsidy_cap_fraction"),
+        cap_fraction=num("subsidy_cap_percent") / 100.0,
     )
 
 
@@ -1709,11 +1709,13 @@ def _subsidies_section(inputs):
                 ).classes("grow")
             for el in ratio_row.default_slot.children:
                 el.bind_enabled_from(battery, "value")
-            with ui.row().classes("w-full items-center no-wrap gap-1"):
+            with ui.row().classes("w-full items-center no-wrap gap-4"):
                 cap = ui.switch("Cap", value=DEFAULTS["subsidy_cap_enabled"])
-                cap.tooltip("Limit the total subsidy to a fraction of the investment")
+                cap.tooltip("Limit the total subsidy to a share of the investment")
                 inputs["subsidy_cap_enabled"] = cap
-                frac = _number("Max fraction", "subsidy_cap_fraction", inputs, step=0.05, min=0)
+                frac = _number(
+                    "Max", "subsidy_cap_percent", inputs, step=5, min=0, max=100, suffix="%"
+                )
                 frac.classes("grow").bind_enabled_from(cap, "value")
         body.bind_visibility_from(use, "value")
     return section
