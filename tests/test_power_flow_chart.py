@@ -2,7 +2,7 @@
 
 import pandas as pd
 
-from gui import POWER_FLOW_WINDOWS, power_flow_chart_options, power_flow_window
+from gui import POWER_FLOW_WINDOWS, power_flow_chart_options, power_flow_window, zoom_start_date
 
 FIRST = pd.Timestamp("2024-01-01 00:15")
 LAST = pd.Timestamp("2025-01-01 00:00")
@@ -64,3 +64,18 @@ class TestChartOptions:
     def test_whole_year_zoom(self):
         opts = power_flow_chart_options(_results(), kw_factor=4, window="Whole year")
         assert opts["dataZoom"][0]["start"] == 0 and opts["dataZoom"][0]["end"] == 100
+
+
+class TestZoomStartDate:
+    def test_slider_percent(self):
+        assert zoom_start_date({"start": 50}, FIRST, LAST) == "2024-07-02"
+
+    def test_inside_zoom_batch(self):
+        assert zoom_start_date({"batch": [{"start": 0, "end": 2}]}, FIRST, LAST) == "2024-01-01"
+
+    def test_own_dispatch_ignored(self):
+        event = {"startValue": "2024-07-15 00:00", "endValue": "2024-07-22 00:00"}
+        assert zoom_start_date(event, FIRST, LAST) is None
+
+    def test_missing_start_ignored(self):
+        assert zoom_start_date({}, FIRST, LAST) is None

@@ -616,13 +616,30 @@ def power_flow_chart_options(
     }
 
 
+def zoom_start_date(event: dict, first: pd.Timestamp, last: pd.Timestamp) -> str | None:
+    """Start date (``YYYY-MM-DD``) of a manual ECharts ``datazoom`` event, else ``None``.
+
+    Slider events carry ``start`` (percent of the data range), inside zoom/pan a ``batch`` of
+    them. Zooms dispatched by the date selector itself carry ``startValue`` and are ignored.
+    """
+    zoom = (event.get("batch") or [event])[0]
+    if "startValue" in zoom or not isinstance(zoom.get("start"), int | float):
+        return None
+    t = first + (last - first) * (zoom["start"] / 100)
+    return t.strftime("%Y-%m-%d")
+
+
 def _power_flow_chart(options: dict) -> None:
     """Date/window selector above a zoomable full-period power flow chart."""
     source = options["dataset"]["source"]
     first, last = pd.Timestamp(source[0][0]), pd.Timestamp(source[-1][0])
     min_d, max_d = first.strftime("%Y/%m/%d"), last.strftime("%Y/%m/%d")
 
+    syncing = False  # date field updated from the chart: don't zoom the chart back
+
     def apply(_=None) -> None:
+        if syncing:
+            return
         rng = power_flow_window(date_input.value or min_d, window_select.value, first, last)
         action = (
             {"type": "dataZoom", "startValue": rng[0], "endValue": rng[1]}
@@ -669,6 +686,25 @@ def _power_flow_chart(options: dict) -> None:
     chart = ui.echart(options).classes("w-full").style("height: 680px")
     date_input.on_value_change(apply)
     window_select.on_value_change(apply)
+
+    def follow_zoom(e) -> None:
+        nonlocal syncing
+        new = zoom_start_date(e.args or {}, first, last)
+        if new is None or new == date_input.value:
+            return
+        syncing = True
+        try:
+            date_input.value = new
+        finally:
+            syncing = False
+
+    chart.on(
+        "chart:datazoom",
+        follow_zoom,
+        ["start", "batch", "startValue"],
+        throttle=0.2,
+        leading_events=False,
+    )
 
 
 def _metric_card(label: str, value: str):
