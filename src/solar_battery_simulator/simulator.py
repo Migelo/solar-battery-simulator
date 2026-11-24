@@ -1925,7 +1925,7 @@ class MultiScenarioAnalyzer:
         self.results = []
 
     def generate_scenarios(self) -> list[dict[str, float]]:
-        """Generate all valid parameter combinations"""
+        """Generate all parameter combinations"""
         print("Generating scenario combinations...")
 
         # Calculate total combinations
@@ -1940,23 +1940,21 @@ class MultiScenarioAnalyzer:
         for solar_kw, inverter_kw, battery_kwh in tqdm(
             combinations, desc="Generating scenarios", unit="combo"
         ):
-            # Only include valid combinations (inverter <= solar)
-            if inverter_kw <= solar_kw:
-                # Calculate battery power based on C-rate
-                battery_charge_power = battery_kwh * self.battery_c_rate
-                battery_discharge_power = battery_kwh * self.battery_c_rate
+            # Calculate battery power based on C-rate
+            battery_charge_power = battery_kwh * self.battery_c_rate
+            battery_discharge_power = battery_kwh * self.battery_c_rate
 
-                scenario = {
-                    "solar_panel_power_kw": solar_kw,
-                    "inverter_power_kw": inverter_kw,
-                    "battery_capacity_kwh": battery_kwh,
-                    "battery_charge_power_kw": battery_charge_power,
-                    "battery_discharge_power_kw": battery_discharge_power,
-                    "battery_efficiency": self.battery_efficiency,
-                }
-                self.scenarios.append(scenario)
+            scenario = {
+                "solar_panel_power_kw": solar_kw,
+                "inverter_power_kw": inverter_kw,
+                "battery_capacity_kwh": battery_kwh,
+                "battery_charge_power_kw": battery_charge_power,
+                "battery_discharge_power_kw": battery_discharge_power,
+                "battery_efficiency": self.battery_efficiency,
+            }
+            self.scenarios.append(scenario)
 
-        print(f"Generated {len(self.scenarios)} valid scenarios")
+        print(f"Generated {len(self.scenarios)} scenarios")
         return self.scenarios
 
     def _cached_batch_simulation(
