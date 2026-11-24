@@ -188,10 +188,8 @@ class TestMultiScenarioAnalyzer:
         )
         analyzer.generate_scenarios()
 
-        # 2 solar * 2 inverter * 2 battery = 8, but some may be filtered
-        # (inverter > solar is invalid)
-        assert len(analyzer.scenarios) > 0
-        assert len(analyzer.scenarios) <= 8
+        # 2 solar * 2 inverter * 2 battery = 8, all combinations kept
+        assert len(analyzer.scenarios) == 8
 
     def test_scenarios_have_required_keys(self, minimal_production_csv, minimal_consumption_csv):
         """Each scenario has required configuration keys."""
