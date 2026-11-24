@@ -5,6 +5,7 @@ import asyncio
 import base64
 import inspect
 import io
+import json
 import os
 import socket
 import tempfile
@@ -1454,6 +1455,88 @@ def build_shared_params(inputs: dict) -> dict:
     return params
 
 
+# ---------------------------------------------------------------------------
+# Batch presets: export / import the batch analysis settings as JSON
+# ---------------------------------------------------------------------------
+BATCH_PRESET_APP = "solar-battery-simulator"
+BATCH_PRESET_KIND = "batch-preset"
+BATCH_PRESET_VERSION = 1
+# Everything the batch run reads: all DEFAULTS keys plus the tariff-group select
+# (data files are machine-specific and intentionally excluded).
+PRESET_KEYS = tuple(sorted(set(DEFAULTS) | {"tariff_group"}))
+
+
+def batch_preset_dict(params: dict, name: str = "") -> dict:
+    """Wrap ``params`` in the versioned preset envelope (JSON-serializable)."""
+    return {
+        "app": BATCH_PRESET_APP,
+        "kind": BATCH_PRESET_KIND,
+        "version": BATCH_PRESET_VERSION,
+        "name": name,
+        "params": {key: params[key] for key in PRESET_KEYS if key in params},
+    }
+
+
+def dumps_batch_preset(params: dict, name: str = "") -> bytes:
+    """Preset envelope as UTF-8 JSON bytes, ready for download or file storage."""
+    return json.dumps(batch_preset_dict(params, name), indent=2, sort_keys=True).encode("utf-8")
+
+
+def parse_batch_preset(data: dict) -> tuple[str, dict]:
+    """(name, params) from a decoded JSON preset; tolerates a bare params mapping.
+
+    Unknown keys are dropped; a wrong app/kind or version raises ``ValueError``.
+    """
+    if not isinstance(data, dict):
+        raise ValueError("Preset must be a JSON object")
+    params = data.get("params", data)
+    if "params" in data:
+        if data.get("app", BATCH_PRESET_APP) != BATCH_PRESET_APP:
+            raise ValueError(f"Not a {BATCH_PRESET_APP} preset")
+        if data.get("kind", BATCH_PRESET_KIND) != BATCH_PRESET_KIND:
+            raise ValueError(f"Not a {BATCH_PRESET_KIND} preset")
+        if data.get("version", BATCH_PRESET_VERSION) != BATCH_PRESET_VERSION:
+            raise ValueError(f"Unsupported preset version: {data.get('version')!r}")
+    if not isinstance(params, dict):
+        raise ValueError("Preset has no params object")
+    known = {key: params[key] for key in PRESET_KEYS if key in params}
+    if not known:
+        raise ValueError("Preset contains no known settings")
+    name = data.get("name", "") if "params" in data else ""
+    return (name if isinstance(name, str) else ""), known
+
+
+def loads_batch_preset(raw: bytes | str) -> tuple[str, dict]:
+    """(name, params) from raw JSON bytes/str (a preset file's content)."""
+    try:
+        data = json.loads(raw)
+    except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+        raise ValueError(f"Invalid preset file: {exc}") from exc
+    return parse_batch_preset(data)
+
+
+def apply_batch_preset(inputs: dict, preset: dict) -> list:
+    """Set sidebar widgets from preset params; returns the applied keys.
+
+    The tariff group goes last: picking it reloads the block rates from the
+    tariff file when the group is known, so manual rates stay as saved.
+    """
+    applied = []
+    for key, value in preset.items():
+        if key == "tariff_group":
+            continue
+        widget = inputs.get(key)
+        if widget is None:
+            continue
+        widget.value = value
+        applied.append(key)
+    group = preset.get("tariff_group")
+    if group is not None and "tariff_group" in inputs:
+        inputs["tariff_group"].value = group
+        applied.append("tariff_group")
+    return applied
+
+
 def _number(label, key, inputs, *, step=None, suffix="", **kwargs):
     """Create a number input and register it."""
     n = ui.number(label=label, value=DEFAULTS[key], step=step, suffix=suffix, **kwargs)
@@ -1739,6 +1822,104 @@ def _subsidies_section(inputs):
     return section
 
 
+def _browser_preset_store() -> dict:
+    """Named presets kept for this browser (per-user server storage)."""
+    try:
+        store = app.storage.user.setdefault("batch_presets", {})
+    except Exception:
+        return {}
+    return store if isinstance(store, dict) else {}
+
+
+def _batch_presets_section(inputs):
+    """Save / load the batch settings: named presets in the browser, or a JSON file."""
+    with (
+        ui.expansion("Batch Presets", icon="bookmarks").classes("w-full").props("dense") as section
+    ):
+        ui.label(
+            "Save the current batch settings in this browser, or as a JSON file. "
+            "Loading a file applies it immediately."
+        ).classes("text-caption")
+
+        def _options() -> dict:
+            names = sorted(_browser_preset_store())
+            return {name: name for name in names}
+
+        name_input = ui.input(label="Preset name", placeholder="e.g. 400 kW + subsidies").classes(
+            "w-full"
+        )
+        saved = ui.select(options=_options(), label="Saved in this browser").classes("w-full")
+
+        def _save_to_browser() -> None:
+            name = (name_input.value or "").strip()
+            if not name:
+                ui.notify("Enter a preset name first", type="warning")
+                return
+            _browser_preset_store()[name] = batch_preset_dict(build_shared_params(inputs), name)[
+                "params"
+            ]
+            saved.set_options(_options(), value=name)
+            ui.notify(f"Preset '{name}' saved in this browser", type="positive")
+
+        def _load_saved() -> None:
+            store = _browser_preset_store()
+            if not saved.value or saved.value not in store:
+                ui.notify("Pick a saved preset first", type="warning")
+                return
+            applied = apply_batch_preset(inputs, store[saved.value])
+            ui.notify(f"Preset '{saved.value}' applied ({len(applied)} settings)", type="positive")
+
+        def _delete_saved() -> None:
+            store = _browser_preset_store()
+            if not saved.value or saved.value not in store:
+                ui.notify("Pick a saved preset first", type="warning")
+                return
+            del store[saved.value]
+            saved.set_options(_options(), value=None)
+            ui.notify(f"Preset '{saved.value}' deleted", type="positive")
+
+        def _download_file() -> None:
+            name = (name_input.value or saved.value or "batch_preset").strip() or "batch_preset"
+            safe = "".join(c if c.isalnum() or c in "-_" else "_" for c in name) or "batch_preset"
+            ui.download.content(
+                dumps_batch_preset(build_shared_params(inputs), name), f"{safe}.json"
+            )
+
+        async def _upload_file(event) -> None:
+            try:
+                raw = await event.file.read()
+            except Exception as exc:
+                ui.notify(f"Could not read {event.file.name}: {exc}", type="negative")
+                return
+            try:
+                name, preset = loads_batch_preset(raw)
+            except ValueError as exc:
+                ui.notify(str(exc), type="negative")
+                return
+            applied = apply_batch_preset(inputs, preset)
+            if name:
+                name_input.value = name
+            ui.notify(
+                f"Preset '{name or event.file.name}' applied ({len(applied)} settings)",
+                type="positive",
+            )
+
+        with ui.row().classes("w-full q-gutter-sm"):
+            ui.button("Save", icon="save", on_click=_save_to_browser).props("outline dense")
+            ui.button("Load", icon="folder_open", on_click=_load_saved).props("outline dense")
+            ui.button("Delete", icon="delete", on_click=_delete_saved).props("outline dense")
+        with ui.row().classes("w-full q-gutter-sm items-center"):
+            ui.button("Save to file", icon="download", on_click=_download_file).props(
+                "outline dense"
+            )
+            ui.upload(
+                label="Load file",
+                auto_upload=True,
+                on_upload=_upload_file,
+            ).props("accept=.json,application/json flat dense").classes("max-w-[180px]")
+    return section
+
+
 # ---------------------------------------------------------------------------
 # Page layout
 # ---------------------------------------------------------------------------
@@ -1746,7 +1927,8 @@ def _subsidies_section(inputs):
 def index():
     # One sidebar for both tabs: every input exists once, so the tabs always share their
     # values. Each tab shows the sections it had before: System Specs is single-only;
-    # Parameter Ranges, Battery, Equipment Costs, Financial and Subsidies are batch-only.
+    # Batch Presets, Parameter Ranges, Battery, Equipment Costs, Financial and Subsidies
+    # are batch-only.
     inputs: dict = {}
     app.storage.user.setdefault("dark_mode", True)
     ui.dark_mode().bind_value(app.storage.user, "dark_mode")
@@ -1843,6 +2025,7 @@ def index():
                     ui.label("Configuration").classes("text-h6")
                     _data_files_section(inputs)
                     _only_on(_system_specs_section(inputs), tabs, SINGLE_TAB)
+                    _only_on(_batch_presets_section(inputs), tabs, BATCH_TAB)
                     _only_on(_parameter_ranges_section(inputs), tabs, BATCH_TAB)
                     _only_on(_battery_section(inputs), tabs, BATCH_TAB)
                     _only_on(_equipment_costs_section(inputs), tabs, BATCH_TAB)
