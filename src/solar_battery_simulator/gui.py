@@ -1867,6 +1867,7 @@ def _batch_presets_section(inputs):
                 ui.notify("Pick a saved preset first", type="warning")
                 return
             applied = apply_batch_preset(inputs, store[saved.value])
+            name_input.value = saved.value
             ui.notify(f"Preset '{saved.value}' applied ({len(applied)} settings)", type="positive")
 
         def _delete_saved() -> None:
@@ -1897,10 +1898,13 @@ def _batch_presets_section(inputs):
                 ui.notify(str(exc), type="negative")
                 return
             applied = apply_batch_preset(inputs, preset)
-            if name:
-                name_input.value = name
+            store_name = name or Path(event.file.name).stem or "uploaded_preset"
+            _browser_preset_store()[store_name] = preset
+            saved.set_options(_options(), value=store_name)
+            name_input.value = store_name
             ui.notify(
-                f"Preset '{name or event.file.name}' applied ({len(applied)} settings)",
+                f"Preset '{store_name}' loaded from file and saved in this browser "
+                f"({len(applied)} settings applied)",
                 type="positive",
             )
 
