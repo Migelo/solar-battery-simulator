@@ -119,6 +119,14 @@ uv run solar-hupx-prices --start 2026-10-01 --end 2026-10-31 --out data/export_p
 
 ## Output
 
+All CLI result files go into `--out-dir` (default `outputs/run-YYYYMMDD-HHMMSS`,
+local time). The directory is created with parents; if it already holds files the
+run stops unless `--overwrite` is given. Every written path is printed at the end.
+
+```bash
+uv run solar-sim --solar-power 400 --battery-capacity 250 --out-dir /tmp/smoke-out
+```
+
 ### Single Mode
 - `power_flow_simulation_results.csv` - Detailed 15-minute interval data
 - `system_summary.csv` - System configuration and annual totals

@@ -11,6 +11,14 @@ uv run solar-sim   # simulator CLI
 
 ## Power Flow Simulator Examples
 
+Results always land in `--out-dir` (default `outputs/run-YYYYMMDD-HHMMSS`, local
+time); rerunning into a non-empty directory needs `--overwrite`:
+```bash
+uv run solar-sim --solar-power 15.0 --battery-capacity 20.0 --out-dir outputs/demo
+uv run solar-sim --solar-power 15.0 --battery-capacity 20.0 \
+  --out-dir outputs/demo --overwrite
+```
+
 ### Single Scenario
 ```bash
 uv run solar-sim --solar-power 15.0 --battery-capacity 20.0

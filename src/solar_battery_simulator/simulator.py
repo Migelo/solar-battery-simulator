@@ -19,7 +19,7 @@ Input Data Requirements:
     - consumption.csv: Electricity consumption with datetime, energy (kWh), power (kW),
       and transmission_block columns
 
-Output Files Generated:
+Output Files Generated (all inside ``--out-dir``, default ``outputs/run-YYYYMMDD-HHMMSS``):
     Single Mode:
         - power_flow_simulation_results.csv: Detailed simulation data
         - system_summary.csv: System configuration and performance summary
@@ -64,6 +64,7 @@ import warnings
 from collections.abc import Callable
 from dataclasses import dataclass
 from itertools import product
+from pathlib import Path
 from typing import Any
 
 import numpy as np
@@ -95,6 +96,41 @@ memory = Memory(location=".cache", verbose=0)
 
 # What the battery-subsidy capacity ratio (kWh battery per kW) is measured against
 BATTERY_SUBSIDY_BASES = ("solar", "inverter", "sum")
+
+# Parent directory for default timestamped CLI output directories.
+DEFAULT_OUT_DIR_PARENT = "outputs"
+
+
+def default_out_dir() -> str:
+    """Default CLI output directory: ``outputs/run-YYYYMMDD-HHMMSS`` (local time)."""
+    stamp = datetime.datetime.now().strftime("run-%Y%m%d-%H%M%S")
+    return os.path.join(DEFAULT_OUT_DIR_PARENT, stamp)
+
+
+def _out_path(output_dir: str | Path | None, filename: str) -> str:
+    """Resolve *filename* inside *output_dir* (plain *filename* when None)."""
+    return str(Path(output_dir) / filename) if output_dir is not None else filename
+
+
+def prepare_out_dir(path: str | Path, overwrite: bool = False) -> Path:
+    """Create the CLI output directory (with parents).
+
+    Fails when the directory already holds files unless *overwrite* is set,
+    so a repeated run never silently mixes results from two configurations.
+    """
+    out = Path(path)
+    if out.exists():
+        existing = sorted(p.name for p in out.iterdir())
+        if existing and not overwrite:
+            shown = ", ".join(existing[:5])
+            if len(existing) > 5:
+                shown += f", ... ({len(existing)} entries)"
+            raise SystemExit(
+                f"Output directory '{out}' already exists and holds: {shown}. "
+                "Pass --overwrite to reuse it or choose another --out-dir."
+            )
+    out.mkdir(parents=True, exist_ok=True)
+    return out
 
 
 @dataclass
@@ -1456,13 +1492,18 @@ class PowerFlowSimulator:
 
         return total_annual_power_fees
 
-    def create_power_flow_visualization(self, days_to_show: int = 7) -> None:
-        """Create visualization of power flows over time"""
+    def create_power_flow_visualization(
+        self, days_to_show: int = 7, output_dir: str | Path | None = None
+    ) -> str | None:
+        """Create visualization of power flows over time.
+
+        Returns the written PNG path, or None when there is nothing to plot.
+        """
         import matplotlib.pyplot as plt
 
         if self.simulation_results is None:
             print("No simulation results available. Run simulation first.")
-            return
+            return None
 
         print(f"\nCreating power flow visualization for {days_to_show} days...")
 
@@ -1551,22 +1592,25 @@ class PowerFlowSimulator:
         ax3.grid(True, alpha=0.3)
 
         plt.tight_layout()
-        plt.savefig(f"power_flow_analysis_{days_to_show}days.png", dpi=300, bbox_inches="tight")
-        print(f"Power flow visualization saved as 'power_flow_analysis_{days_to_show}days.png'")
+        path = _out_path(output_dir, f"power_flow_analysis_{days_to_show}days.png")
+        plt.savefig(path, dpi=300, bbox_inches="tight")
+        print(f"Power flow visualization saved as '{path}'")
         plt.close()
+        return path
 
-    def export_results(self) -> None:
-        """Export detailed results to CSV files"""
+    def export_results(self, output_dir: str | Path | None = None) -> list[str]:
+        """Export detailed results to CSV files. Returns the written paths."""
         if self.simulation_results is None:
             print("No simulation results available. Run simulation first.")
-            return
+            return []
 
         print("\nExporting results...")
 
         # Export detailed simulation results
         export_df = self.simulation_results.copy()
-        export_df.to_csv("power_flow_simulation_results.csv", index=False)
-        print("Detailed results exported to 'power_flow_simulation_results.csv'")
+        detailed_path = _out_path(output_dir, "power_flow_simulation_results.csv")
+        export_df.to_csv(detailed_path, index=False)
+        print(f"Detailed results exported to '{detailed_path}'")
 
         # Create summary statistics
         summary_stats = {
@@ -1599,8 +1643,10 @@ class PowerFlowSimulator:
         }
 
         summary_df = pd.DataFrame(summary_stats)
-        summary_df.to_csv("system_summary.csv", index=False)
-        print("System summary exported to 'system_summary.csv'")
+        summary_path = _out_path(output_dir, "system_summary.csv")
+        summary_df.to_csv(summary_path, index=False)
+        print(f"System summary exported to '{summary_path}'")
+        return [detailed_path, summary_path]
 
 
 # Standalone cached function for batch simulations
@@ -2144,11 +2190,17 @@ class MultiScenarioAnalyzer:
         print(f"\nCompleted all {len(self.scenarios)} simulations!")
         return self.results
 
-    def create_comparison_summary(self, output_path: str | None = "multi_scenario_comparison.csv"):
+    def create_comparison_summary(
+        self,
+        output_path: str | None = "multi_scenario_comparison.csv",
+        output_dir: str | Path | None = None,
+    ):
         """Create summary table comparing all scenarios.
 
         Args:
             output_path: CSV path to write, or None to skip file write (GUI/server use).
+            output_dir: directory the CSV is written into (CLI runs); the file name
+                keeps its basename. Ignored when *output_path* is None.
         """
         if not self.results:
             print("No results available. Run simulations first.")
@@ -2182,6 +2234,7 @@ class MultiScenarioAnalyzer:
 
         # Export to CSV (skipped when output_path is None, e.g. GUI server runs)
         if output_path is not None:
+            output_path = _out_path(output_dir, Path(output_path).name)
             summary_df.to_csv(output_path, index=False)
             print(f"Comparison summary exported to '{output_path}'")
 
@@ -2212,14 +2265,14 @@ class MultiScenarioAnalyzer:
 
         return "_" + "_".join(params) if params else ""
 
-    def create_savings_heatmap(self):
+    def create_savings_heatmap(self, output_dir: str | Path | None = None) -> str | None:
         """Create heatmap of annual savings across solar and battery combinations"""
         import matplotlib.pyplot as plt
         import seaborn as sns
 
         if not self.results:
             print("No results available. Run simulations first.")
-            return
+            return None
 
         print("\nCreating savings heatmap...")
 
@@ -2254,18 +2307,20 @@ class MultiScenarioAnalyzer:
         # Generate filename with power smoothing parameters
         params_str = self._get_parameters_string()
         filename = f"multi_scenario_savings_heatmap{params_str}.png"
-        plt.savefig(filename, dpi=300, bbox_inches="tight")
-        print(f"Savings heatmap saved as '{filename}'")
+        path = _out_path(output_dir, filename)
+        plt.savefig(path, dpi=300, bbox_inches="tight")
+        print(f"Savings heatmap saved as '{path}'")
         plt.close()
+        return path
 
-    def create_roi_heatmap(self):
+    def create_roi_heatmap(self, output_dir: str | Path | None = None) -> str | None:
         """Create heatmap of payback periods (ROI analysis)"""
         import matplotlib.pyplot as plt
         import seaborn as sns
 
         if not self.results:
             print("No results available. Run simulations first.")
-            return
+            return None
 
         print("\nCreating ROI heatmap...")
 
@@ -2315,18 +2370,20 @@ class MultiScenarioAnalyzer:
         # Generate filename with power smoothing parameters
         params_str = self._get_parameters_string()
         filename = f"multi_scenario_roi_heatmap{params_str}.png"
-        plt.savefig(filename, dpi=300, bbox_inches="tight")
-        print(f"ROI heatmap saved as '{filename}'")
+        path = _out_path(output_dir, filename)
+        plt.savefig(path, dpi=300, bbox_inches="tight")
+        print(f"ROI heatmap saved as '{path}'")
         plt.close()
+        return path
 
-    def create_self_sufficiency_heatmap(self):
+    def create_self_sufficiency_heatmap(self, output_dir: str | Path | None = None) -> str | None:
         """Create heatmap of self-sufficiency percentages"""
         import matplotlib.pyplot as plt
         import seaborn as sns
 
         if not self.results:
             print("No results available. Run simulations first.")
-            return
+            return None
 
         print("\nCreating self-sufficiency heatmap...")
 
@@ -2371,18 +2428,20 @@ class MultiScenarioAnalyzer:
         # Generate filename with power smoothing parameters
         params_str = self._get_parameters_string()
         filename = f"multi_scenario_self_sufficiency_heatmap{params_str}.png"
-        plt.savefig(filename, dpi=300, bbox_inches="tight")
-        print(f"Self-sufficiency heatmap saved as '{filename}'")
+        path = _out_path(output_dir, filename)
+        plt.savefig(path, dpi=300, bbox_inches="tight")
+        print(f"Self-sufficiency heatmap saved as '{path}'")
         plt.close()
+        return path
 
-    def create_npv_heatmap(self):
+    def create_npv_heatmap(self, output_dir: str | Path | None = None) -> str | None:
         """Create heatmap of Net Present Value over 20 years"""
         import matplotlib.pyplot as plt
         import seaborn as sns
 
         if not self.results:
             print("No results available. Run simulations first.")
-            return
+            return None
 
         print("\nCreating NPV heatmap...")
 
@@ -2470,17 +2529,19 @@ class MultiScenarioAnalyzer:
         # Generate filename with power smoothing parameters
         params_str = self._get_parameters_string()
         filename = f"multi_scenario_npv_heatmap{params_str}.png"
-        plt.savefig(filename, dpi=300, bbox_inches="tight")
-        print(f"NPV heatmap saved as '{filename}'")
+        path = _out_path(output_dir, filename)
+        plt.savefig(path, dpi=300, bbox_inches="tight")
+        print(f"NPV heatmap saved as '{path}'")
         plt.close()
+        return path
 
-    def create_pareto_analysis(self):
+    def create_pareto_analysis(self, output_dir: str | Path | None = None) -> str | None:
         """Create Pareto frontier analysis (cost vs performance)"""
         import matplotlib.pyplot as plt
 
         if not self.results:
             print("No results available. Run simulations first.")
-            return
+            return None
 
         print("\nCreating Pareto analysis...")
 
@@ -2524,17 +2585,21 @@ class MultiScenarioAnalyzer:
             )
 
         plt.tight_layout()
-        plt.savefig("multi_scenario_pareto_analysis.png", dpi=300, bbox_inches="tight")
-        print("Pareto analysis saved as 'multi_scenario_pareto_analysis.png'")
+        pareto_path = _out_path(output_dir, "multi_scenario_pareto_analysis.png")
+        plt.savefig(pareto_path, dpi=300, bbox_inches="tight")
+        print(f"Pareto analysis saved as '{pareto_path}'")
         plt.close()
+        return pareto_path
 
-    def create_soc_time_plot(self, days_to_show=365):
+    def create_soc_time_plot(
+        self, days_to_show=365, output_dir: str | Path | None = None
+    ) -> str | None:
         """Create plot showing SOC vs time for all battery combinations"""
         import matplotlib.pyplot as plt
 
         if not self.results:
             print("No results available. Run simulations first.")
-            return
+            return None
 
         print(f"\nCreating SOC vs time plot for {days_to_show} days...")
 
@@ -2619,11 +2684,13 @@ class MultiScenarioAnalyzer:
                 ax.legend(bbox_to_anchor=(1.05, 1), loc="upper left", fontsize=8)
 
         plt.tight_layout()
-        plt.savefig(f"multi_scenario_soc_time_{days_to_show}days.png", dpi=300, bbox_inches="tight")
-        print(f"SOC vs time plot saved as 'multi_scenario_soc_time_{days_to_show}days.png'")
+        soc_path = _out_path(output_dir, f"multi_scenario_soc_time_{days_to_show}days.png")
+        plt.savefig(soc_path, dpi=300, bbox_inches="tight")
+        print(f"SOC vs time plot saved as '{soc_path}'")
         plt.close()
+        return soc_path
 
-    def create_soc_by_solar_inverter_plot(self) -> None:
+    def create_soc_by_solar_inverter_plot(self, output_dir: str | Path | None = None) -> list[str]:
         """
         Create separate SOC plots for each solar panel + inverter combination.
 
@@ -2672,7 +2739,7 @@ class MultiScenarioAnalyzer:
 
         if not self.results:
             print("No results available. Run simulations first.")
-            return
+            return []
 
         print("\nCreating monthly SOC pattern plots by solar+inverter combination...")
 
@@ -2681,7 +2748,7 @@ class MultiScenarioAnalyzer:
 
         if not battery_results:
             print("No battery scenarios found to plot.")
-            return
+            return []
 
         # Get unique solar+inverter combinations
         solar_inverter_combinations = set()
@@ -2695,9 +2762,10 @@ class MultiScenarioAnalyzer:
 
         if n_combinations == 0:
             print("No solar+inverter combinations found.")
-            return
+            return []
 
         # Create individual plots for each solar+inverter combination
+        written: list[str] = []
         for solar_kw, inverter_kw in combinations:
             # Create new figure for this combination
             plt.figure(figsize=(12, 8))
@@ -2790,21 +2858,24 @@ class MultiScenarioAnalyzer:
             # Save individual plot file
             filename = f"soc_{solar_kw:.0f}kW_solar_{inverter_kw:.0f}kW_inverter_monthly.png"
             plt.tight_layout()
-            plt.savefig(filename, dpi=300, bbox_inches="tight")
+            monthly_path = _out_path(output_dir, filename)
+            plt.savefig(monthly_path, dpi=300, bbox_inches="tight")
             print(
-                f"Created monthly SOC plot for {solar_kw:.0f}kW solar + {inverter_kw:.0f}kW inverter: {filename}"
+                f"Created monthly SOC plot for {solar_kw:.0f}kW solar + {inverter_kw:.0f}kW inverter: {monthly_path}"
             )
+            written.append(monthly_path)
             plt.close()
 
         print(
             f"Generated {len(combinations)} individual monthly SOC plots for solar+inverter combinations"
         )
+        return written
 
-    def export_comprehensive_results(self):
-        """Export comprehensive results to Excel file"""
+    def export_comprehensive_results(self, output_dir: str | Path | None = None) -> str | None:
+        """Export comprehensive results to Excel file. Returns the written path."""
         if not self.results:
             print("No results available. Run simulations first.")
-            return
+            return None
 
         print("\nExporting comprehensive results to Excel...")
 
@@ -2819,9 +2890,8 @@ class MultiScenarioAnalyzer:
         df = df.sort_values("savings_vs_baseline", ascending=False)
 
         try:
-            with pd.ExcelWriter(
-                "multi_scenario_comprehensive_results.xlsx", engine="openpyxl"
-            ) as writer:
+            xlsx_path = _out_path(output_dir, "multi_scenario_comprehensive_results.xlsx")
+            with pd.ExcelWriter(xlsx_path, engine="openpyxl") as writer:
                 # Main results sheet
                 df.to_excel(writer, sheet_name="All Results", index=False)
 
@@ -2846,12 +2916,15 @@ class MultiScenarioAnalyzer:
                     writer, sheet_name="Solar + Battery", index=False
                 )
 
-            print("Comprehensive results exported to 'multi_scenario_comprehensive_results.xlsx'")
+            print(f"Comprehensive results exported to '{xlsx_path}'")
+            return xlsx_path
 
         except ImportError:
             print("openpyxl not available, exporting to CSV instead...")
-            df.to_csv("multi_scenario_comprehensive_results.csv", index=False)
-            print("Comprehensive results exported to 'multi_scenario_comprehensive_results.csv'")
+            csv_path = _out_path(output_dir, "multi_scenario_comprehensive_results.csv")
+            df.to_csv(csv_path, index=False)
+            print(f"Comprehensive results exported to '{csv_path}'")
+            return csv_path
 
     def calculate_investment(
         self, solar_kw: float, inverter_kw: float, battery_kwh: float
@@ -2923,6 +2996,7 @@ class MultiScenarioAnalyzer:
         seed: int = 42,
         polish: bool = True,
         verbose: bool = True,
+        output_dir: str | Path | None = None,
     ) -> dict[str, Any]:
         """
         Use scipy's differential evolution to find optimal solar + battery configuration
@@ -3168,7 +3242,7 @@ class MultiScenarioAnalyzer:
             print(f"  Total investment: €{self._best_config['investment']:,.0f}")
 
         # Save optimization plot
-        self._save_optimization_plot(result)
+        optimization_plot = self._save_optimization_plot(result, output_dir=output_dir)
 
         return {
             "success": result.success,
@@ -3182,11 +3256,12 @@ class MultiScenarioAnalyzer:
             "optimal_npv": optimal_npv,
             "function_evaluations": result.nfev,
             "iterations": result.nit,
+            "optimization_plot": optimization_plot,
             "full_result": result,
             "best_config": self._best_config,
         }
 
-    def _save_optimization_plot(self, result):
+    def _save_optimization_plot(self, result, output_dir: str | Path | None = None) -> str | None:
         """Save optimization convergence and parameter evolution plots"""
         import matplotlib.pyplot as plt
 
@@ -3317,47 +3392,51 @@ class MultiScenarioAnalyzer:
                 plt.axis("off")
 
             plt.tight_layout()
-            plt.savefig("optimization_evolution.png", dpi=300, bbox_inches="tight")
-            print("\nOptimization evolution plot saved as 'optimization_evolution.png'")
+            opt_path = _out_path(output_dir, "optimization_evolution.png")
+            plt.savefig(opt_path, dpi=300, bbox_inches="tight")
+            print(f"\nOptimization evolution plot saved as '{opt_path}'")
             plt.close()
+            return opt_path
 
         except Exception as e:
             print(f"Could not save optimization plot: {e}")
+            return None
 
-    def run_complete_analysis(self):
-        """Run complete multi-scenario analysis with all outputs"""
+    def run_complete_analysis(self, output_dir: str | Path | None = None) -> list[str]:
+        """Run complete multi-scenario analysis with all outputs.
+
+        Returns the written file paths.
+        """
         print("Starting complete multi-scenario analysis...")
 
         # Run all simulations
         self.run_all_scenarios()
 
         # Create summary
-        self.create_comparison_summary()
+        self.create_comparison_summary(output_dir=output_dir)
 
         # Create visualizations
-        self.create_savings_heatmap()
-        self.create_roi_heatmap()
-        self.create_npv_heatmap()
-        self.create_self_sufficiency_heatmap()
-        self.create_pareto_analysis()
+        written = [
+            self.create_savings_heatmap(output_dir=output_dir),
+            self.create_roi_heatmap(output_dir=output_dir),
+            self.create_npv_heatmap(output_dir=output_dir),
+            self.create_self_sufficiency_heatmap(output_dir=output_dir),
+            self.create_pareto_analysis(output_dir=output_dir),
+        ]
 
         # Export comprehensive results
-        self.export_comprehensive_results()
+        written.append(self.export_comprehensive_results(output_dir=output_dir))
+
+        comparison_path = _out_path(output_dir, "multi_scenario_comparison.csv")
+        paths = [comparison_path, *[p for p in written if p is not None]]
 
         print("\n" + "=" * 60)
         print("MULTI-SCENARIO ANALYSIS COMPLETE!")
         print("=" * 60)
         print("\nGenerated files:")
-        print("- multi_scenario_comparison.csv")
-
-        # Generate dynamic filenames with parameters
-        params_str = self._get_parameters_string()
-        print(f"- multi_scenario_savings_heatmap{params_str}.png")
-        print(f"- multi_scenario_roi_heatmap{params_str}.png")
-        print(f"- multi_scenario_self_sufficiency_heatmap{params_str}.png")
-        print(f"- multi_scenario_npv_heatmap{params_str}.png")
-        print("- multi_scenario_pareto_analysis.png")
-        print("- multi_scenario_comprehensive_results.xlsx (or .csv)")
+        for path in paths:
+            print(f"- {path}")
+        return paths
 
 
 # Rates used by --tariff-group manual for per-block flags that are not given.
@@ -3825,9 +3904,22 @@ def main():
         help="Consumption file, legacy layout or smart-meter export: "
         f"{', '.join(SUPPORTED_EXTENSIONS)} (default: data/consumption.csv)",
     )
+    parser.add_argument(
+        "--out-dir",
+        default=None,
+        help="Output directory for result files (default: outputs/run-YYYYMMDD-HHMMSS, local time)",
+    )
+    parser.add_argument(
+        "--overwrite",
+        action="store_true",
+        help="Reuse a non-empty output directory instead of stopping with an error",
+    )
     args = parser.parse_args()
     if tariff_error := _manual_tariff_flags_error(args):
         parser.error(tariff_error)
+
+    out_dir = prepare_out_dir(args.out_dir or default_out_dir(), overwrite=args.overwrite)
+    print(f"Output directory: {out_dir}")
 
     # Export pricing: own price file > market (last-year cache) > fixed price (default)
     export_price_alignment = ALIGN_AUTO
@@ -3952,14 +4044,13 @@ def main():
                 "Constraints: Solar 100-1000kW (50kW steps), Inverter 50kW-Solar (50kW steps), Battery 0-1000kWh (50kWh steps)"
             )
             print(f"Max iterations: {args.opt_maxiter}, Population size: {args.opt_popsize}")
-
-            # Run optimization
             result = analyzer.optimize_npv_differential_evolution(
                 maxiter=args.opt_maxiter,
                 popsize=args.opt_popsize,
                 seed=args.opt_seed,
                 polish=args.opt_polish,
                 verbose=True,
+                output_dir=out_dir,
             )
 
             print("\n" + "=" * 60)
@@ -3974,9 +4065,11 @@ def main():
 
             if result["message"]:
                 print(f"Message: {result['message']}")
+            if result["optimization_plot"] is not None:
+                print(f"\nGenerated files:\n- {result['optimization_plot']}")
         else:
             # Run complete analysis
-            analyzer.run_complete_analysis()
+            analyzer.run_complete_analysis(output_dir=out_dir)
 
     else:
         print("\nRunning in SINGLE MODE - Individual scenario")
@@ -4093,13 +4186,12 @@ def main():
             print(
                 f"  Annual OVE-SPTE cost: €{ove_spte_breakdown['annual_ove_spte_cost_eur']:>6.2f}"
             )
-
-        simulator.export_results()
+        written = simulator.export_results(output_dir=out_dir)
 
         print("\nSimulation complete!")
         print("\nGenerated files:")
-        print("- power_flow_simulation_results.csv")
-        print("- system_summary.csv")
+        for path in written:
+            print(f"- {path}")
 
 
 if __name__ == "__main__":
