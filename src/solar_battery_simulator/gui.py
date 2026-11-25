@@ -3,6 +3,7 @@
 
 import asyncio
 import base64
+import contextlib
 import inspect
 import io
 import json
@@ -487,6 +488,39 @@ def power_flow_range(
     return begin.strftime(_CHART_TIME_FMT), stop.strftime(_CHART_TIME_FMT)
 
 
+POWER_FLOW_PRESET_LAST7 = "last7"
+POWER_FLOW_PRESET_WINTER = "winter"
+
+
+def power_flow_preset_range(
+    first_day: pd.Timestamp, last_day: pd.Timestamp, preset: str
+) -> tuple[str, str]:
+    """Start/end dates (``YYYY-MM-DD``, inclusive) for a chart preset button.
+
+    ``last7`` is the last 7 days of data (clamped when the data is shorter);
+    ``winter`` is Dec 1 .. Jan 31 around the turn of the year inside the data
+    (December of the last year present, January of the next), falling back to
+    the whole period when the data holds neither December nor January.
+    """
+    first_day = pd.Timestamp(first_day).normalize()
+    last_day = pd.Timestamp(last_day).normalize()
+    if last_day < first_day:
+        first_day, last_day = last_day, first_day
+    if preset == POWER_FLOW_PRESET_LAST7:
+        start = max(first_day, last_day - pd.Timedelta(days=6))
+        return start.strftime("%Y-%m-%d"), last_day.strftime("%Y-%m-%d")
+    if preset == POWER_FLOW_PRESET_WINTER:
+        dec1 = pd.Timestamp(year=last_day.year, month=12, day=1)
+        if last_day < dec1:
+            dec1 = pd.Timestamp(year=last_day.year - 1, month=12, day=1)
+        jan31 = pd.Timestamp(year=dec1.year + 1, month=1, day=31)
+        start, end = max(first_day, dec1), min(last_day, jan31)
+        if start > end:  # no Dec/Jan in the data: show everything
+            start, end = first_day, last_day
+        return start.strftime("%Y-%m-%d"), end.strftime("%Y-%m-%d")
+    raise ValueError(f"Unknown power flow preset: {preset!r}")
+
+
 _DEFAULT_DAYS: Any = object()  # sentinel: read POWER_FLOW_INITIAL_DAYS at call time
 
 
@@ -665,6 +699,11 @@ def _power_flow_chart(options: dict) -> None:
             "dispatchAction", {"type": "dataZoom", "startValue": rng[0], "endValue": rng[1]}
         )
 
+    history = {"prev": None}  # range before the last preset/zoom, for Back
+
+    def remember() -> None:
+        history["prev"] = (start_input.value, end_input.value)
+
     def shift(direction: int) -> None:
         try:
             s, e = sorted((pd.Timestamp(start_input.value), pd.Timestamp(end_input.value)))
@@ -676,12 +715,30 @@ def _power_flow_chart(options: dict) -> None:
             s, e = first_day, first_day + span - pd.Timedelta(days=1)
         if e > last_day:
             s, e = max(first_day, last_day - span + pd.Timedelta(days=1)), last_day
+        remember()
         set_dates(str(s.date()), str(e.date()))
         apply()
 
     def whole_period() -> None:
+        remember()
         set_dates(str(first_day.date()), str(last_day.date()))
         apply()
+
+    def apply_preset(preset: str) -> None:
+        start, end = power_flow_preset_range(first_day, last_day, preset)
+        remember()
+        set_dates(start, end)
+        apply()
+
+    def go_back() -> None:
+        prev = history["prev"]
+        if prev is None:
+            ui.notify("Nothing to go back to yet", type="info")
+            return
+        current = (start_input.value, end_input.value)
+        set_dates(*prev)
+        apply()
+        history["prev"] = current
 
     min_d, max_d = first_day.strftime("%Y/%m/%d"), last_day.strftime("%Y/%m/%d")
     with ui.row().classes("items-center q-gutter-sm q-mt-sm"):
@@ -696,6 +753,19 @@ def _power_flow_chart(options: dict) -> None:
         ui.button("Whole period", icon="zoom_out_map", on_click=whole_period).props(
             "flat dense no-caps"
         )
+        ui.button(
+            "Last 7 days",
+            icon="date_range",
+            on_click=lambda: apply_preset(POWER_FLOW_PRESET_LAST7),
+        ).props("flat dense no-caps")
+        ui.button(
+            "Winter peak (Dec-Jan)",
+            icon="ac_unit",
+            on_click=lambda: apply_preset(POWER_FLOW_PRESET_WINTER),
+        ).props("flat dense no-caps")
+        ui.button("Back", icon="undo", on_click=go_back).props("flat dense no-caps").tooltip(
+            "Restore the range before the last preset or zoom"
+        )
         ui.label("Scroll / drag on the chart or use the slider to zoom").classes(
             "text-caption text-grey"
         )
@@ -706,6 +776,7 @@ def _power_flow_chart(options: dict) -> None:
     def follow_zoom(e) -> None:
         dates = zoom_dates(e.args or {}, first, last)
         if dates and dates != (start_input.value, end_input.value):
+            history["prev"] = (start_input.value, end_input.value)
             set_dates(*dates)
 
     # Toolbox "restore" resets the zoom to the opening range without a datazoom event
@@ -972,16 +1043,22 @@ def _heatmap_height(grid: pd.DataFrame) -> int:
 
 
 def _batch_heatmap(
-    grid: pd.DataFrame, spec: HeatmapSpec, on_pick: ScenarioPick | None = None
+    grid: pd.DataFrame,
+    spec: HeatmapSpec,
+    on_pick: ScenarioPick | None = None,
+    params: dict | None = None,
 ) -> None:
     """Interactive heatmap with PNG / CSV download buttons.
 
     With ``on_pick``, a left click on a cell adopts its scenario into the Single Scenario
-    tab; a right click opens a menu to adopt it or to run it right away.
+    tab; a right click opens a menu to adopt it or to run it right away. ``params``
+    names the download files after the System Specs sizes when available.
     """
     if grid.empty:
         ui.label("No valid scenarios for this metric.").classes("text-grey q-pa-md")
         return
+    png_name = heatmap_download_name(spec.key, params, "png")
+    csv_name = heatmap_download_name(spec.key, params, "csv")
 
     async def download_png() -> None:
         url = await chart.run_chart_method(
@@ -994,7 +1071,7 @@ def _batch_heatmap(
             },
         )
         if isinstance(url, str) and "," in url:
-            ui.download.content(base64.b64decode(url.split(",", 1)[1]), f"batch_{spec.key}.png")
+            ui.download.content(base64.b64decode(url.split(",", 1)[1]), png_name)
         else:
             ui.notify("Could not export the chart image", type="warning")
 
@@ -1003,9 +1080,7 @@ def _batch_heatmap(
         ui.button(
             "CSV",
             icon="download",
-            on_click=lambda: ui.download.content(
-                heatmap_csv_bytes(grid, spec), f"batch_{spec.key}.csv"
-            ),
+            on_click=lambda: ui.download.content(heatmap_csv_bytes(grid, spec), csv_name),
         ).props("outline dense")
         hint = "Hover a cell for details; drag the colour bar to filter."
         if on_pick:
@@ -1181,6 +1256,7 @@ async def run_batch_analysis(
             "comparison_df": comparison_df,
             "table_rows": comparison_table_rows(comparison_df),
             "n_scenarios": len(analyzer.results),
+            "params": dict(params),
         }
 
     try:
@@ -1213,29 +1289,35 @@ async def run_batch_analysis(
         with ui.tab_panels(tabs, value=heatmap_tabs[0] if heatmap_tabs else None).classes("w-full"):
             for tab, (spec, grid) in zip(heatmap_tabs, result["heatmaps"], strict=True):
                 with ui.tab_panel(tab):
-                    _batch_heatmap(grid, spec, on_pick)
+                    _batch_heatmap(grid, spec, on_pick, result.get("params"))
 
         # Comparison table
         ui.label("Scenario Comparison").classes("text-h6 q-mt-lg")
+        ui.label(
+            "GUI shows plain numbers; Excel and CSV downloads use Slovenian "
+            "format ([$-424], ';' separator, decimal comma)."
+        ).classes("text-caption text-grey")
         if result["table_rows"]:
             columns = [
                 {"name": k, "label": k, "field": k, "sortable": True}
                 for k in result["table_rows"][0]
             ]
             comparison_df = result["comparison_df"]
+            xlsx_name = comparison_download_name(result.get("params"), "xlsx")
+            csv_name = comparison_download_name(result.get("params"), "csv")
             with ui.row().classes("q-mt-sm items-center"):
                 ui.button(
                     "Download Excel",
                     icon="download",
                     on_click=lambda: ui.download.content(
-                        comparison_xlsx_bytes(comparison_df), "scenario_comparison.xlsx"
+                        comparison_xlsx_bytes(comparison_df), xlsx_name
                     ),
                 ).props("outline")
                 ui.button(
                     "Download CSV",
                     icon="download",
                     on_click=lambda: ui.download.content(
-                        comparison_csv_bytes(comparison_df), "scenario_comparison.csv"
+                        comparison_csv_bytes(comparison_df), csv_name
                     ),
                 ).props("outline")
             ui.table(columns=columns, rows=result["table_rows"]).classes("q-mt-sm")
@@ -1338,6 +1420,43 @@ def comparison_xlsx_bytes(df: pd.DataFrame) -> bytes:
                 cell.number_format = fmt
             ws.column_dimensions[letter].width = max(12, len(label) + 2)
     return buf.getvalue()
+
+
+def _compact_number(value: Any) -> str | None:
+    """Compact filename part for a numeric param (``400.0`` -> ``"400"``), else ``None``."""
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    if number != number:  # NaN
+        return None
+    return f"{number:g}"
+
+
+def scenario_filename_stem(params: dict | None) -> str:
+    """``400kW_300kW_250kWh`` from the System Specs sizes, or ``""`` when any is missing."""
+    parts = [
+        _compact_number((params or {}).get(key))
+        for key in ("solar_power", "inverter_power", "battery_capacity")
+    ]
+    if any(part is None for part in parts):
+        return ""
+    solar, inverter, battery = parts
+    return f"{solar}kW_{inverter}kW_{battery}kWh"
+
+
+def comparison_download_name(params: dict | None, ext: str) -> str:
+    """``scenario_comparison_<solar>kW_<inv>kW_<bat>kWh.<ext>``, else the plain name."""
+    stem = scenario_filename_stem(params)
+    base = f"scenario_comparison_{stem}" if stem else "scenario_comparison"
+    return f"{base}.{ext}"
+
+
+def heatmap_download_name(spec_key: str, params: dict | None, ext: str) -> str:
+    """``batch_<key>_<solar>kW_<inv>kW_<bat>kWh.<ext>``, else the plain name."""
+    stem = scenario_filename_stem(params)
+    base = f"batch_{spec_key}_{stem}" if stem else f"batch_{spec_key}"
+    return f"{base}.{ext}"
 
 
 # ---------------------------------------------------------------------------
@@ -1447,11 +1566,51 @@ def _loan_years(params: dict) -> int:
     return max(int(params.get("loan_years") or 0), 0)
 
 
+SIDEBAR_PARAMS_KEY = "sidebar_params_v1"
+
+
+def sidebar_params_subset(params: dict) -> dict:
+    """Storable sidebar params: known keys only (tariff group included, files excluded)."""
+    return {key: params[key] for key in PRESET_KEYS if key in params}
+
+
+def save_sidebar_params(params: dict) -> None:
+    """Remember the sidebar inputs for this browser (best effort, never raises)."""
+    with contextlib.suppress(Exception):
+        app.storage.user[SIDEBAR_PARAMS_KEY] = sidebar_params_subset(params)
+
+
+def load_sidebar_params() -> dict:
+    """Sidebar inputs saved by an earlier visit, or ``{}`` when none/invalid."""
+    try:
+        saved = app.storage.user.get(SIDEBAR_PARAMS_KEY)
+    except Exception:
+        return {}
+    if not isinstance(saved, dict):
+        return {}
+    return {key: saved[key] for key in PRESET_KEYS if key in saved}
+
+
+def reset_sidebar_defaults(inputs: dict) -> list:
+    """Restore ``DEFAULTS`` in the sidebar (tariff group reloads its block rates)."""
+    applied = apply_batch_preset(inputs, dict(DEFAULTS))
+    if "tariff_group" in inputs:
+        try:
+            tariffs, _ = _load_tariffs()
+        except Exception:
+            tariffs = {}
+        inputs["tariff_group"].value = _default_tariff_group(tariffs)
+        applied.append("tariff_group")
+    build_shared_params(inputs)  # persist the restored values
+    return applied
+
+
 def build_shared_params(inputs: dict) -> dict:
-    """Collect current values from all input widgets."""
+    """Collect current values from all input widgets (and remember them for next visit)."""
     params = {}
     for key, widget in inputs.items():
         params[key] = widget.value
+    save_sidebar_params(params)
     return params
 
 
@@ -1534,6 +1693,12 @@ def apply_batch_preset(inputs: dict, preset: dict) -> list:
     if group is not None and "tariff_group" in inputs:
         inputs["tariff_group"].value = group
         applied.append("tariff_group")
+    try:  # remember the applied preset for the next visit
+        merged = load_sidebar_params()
+        merged.update(sidebar_params_subset(preset))
+        save_sidebar_params(merged)
+    except Exception:
+        pass
     return applied
 
 
@@ -1688,6 +1853,14 @@ def apply_scenario(inputs: dict, cell: tuple[float, float, float]) -> None:
     inputs["solar_power"].value = solar
     inputs["inverter_power"].value = inverter
     inputs["battery_capacity"].value = battery
+    try:  # remember the adopted sizes for the next visit
+        merged = load_sidebar_params()
+        merged.update(
+            {"solar_power": solar, "inverter_power": inverter, "battery_capacity": battery}
+        )
+        save_sidebar_params(merged)
+    except Exception:
+        pass
 
 
 def _system_specs_section(inputs):
@@ -1772,9 +1945,15 @@ def _financial_section(inputs):
         use_loan.tooltip("Off: the investment is paid in cash upfront")
         inputs["use_loan"] = use_loan
         with ui.grid(columns=3).classes("w-full gap-1"):
-            _number("Discount", "discount_rate", inputs, step=0.01)
+            _number("Discount", "discount_rate", inputs, step=0.01).tooltip(
+                "Fraction per year: 0.05 = 5%"
+            )
             loan_rate = _number("Loan rate", "loan_rate", inputs, step=0.01)
-            loan_years = _number("Loan yrs", "loan_years", inputs, step=1, min=1)
+            loan_rate.tooltip("Fraction per year: 0.03 = 3%")
+            loan_years = _number("Loan yrs", "loan_years", inputs, step=1, min=0)
+            loan_years.tooltip(
+                "Loan term in years; 0 = cash purchase (also used when 'Use loan' is off)"
+            )
             loan_rate.bind_enabled_from(use_loan, "value")
             loan_years.bind_enabled_from(use_loan, "value")
     return section
@@ -2026,7 +2205,16 @@ def index():
         with splitter.before:
             with ui.scroll_area().classes("w-full").style("height: calc(100vh - 170px)"):
                 with ui.column().classes("q-gutter-xs p-2 w-full"):
-                    ui.label("Configuration").classes("text-h6")
+                    with ui.row().classes("w-full items-center justify-between"):
+                        ui.label("Configuration").classes("text-h6")
+
+                        def _reset_sidebar() -> None:
+                            reset_sidebar_defaults(inputs)
+                            ui.notify("Sidebar reset to defaults", type="positive")
+
+                        ui.button(
+                            "Reset defaults", icon="restart_alt", on_click=_reset_sidebar
+                        ).props("flat dense no-caps")
                     _data_files_section(inputs)
                     _only_on(_system_specs_section(inputs), tabs, SINGLE_TAB)
                     _only_on(_batch_presets_section(inputs), tabs, BATCH_TAB)
@@ -2039,6 +2227,9 @@ def index():
                     _transmission_section(inputs)
                     _smoothing_section(inputs)
                     _heating_section(inputs)
+                    saved_sidebar = load_sidebar_params()
+                    if saved_sidebar:
+                        apply_batch_preset(inputs, saved_sidebar)
 
         with splitter.after:
             with ui.tab_panels(tabs, value=batch_tab).classes("w-full"):

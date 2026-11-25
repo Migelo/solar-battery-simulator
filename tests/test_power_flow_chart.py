@@ -1,10 +1,12 @@
 """Tests for the zoomable full-year power flow chart in the Single Scenario tab."""
 
 import pandas as pd
+import pytest
 
 from solar_battery_simulator.gui import (
     power_flow_chart_options,
     power_flow_days,
+    power_flow_preset_range,
     power_flow_range,
     zoom_dates,
 )
@@ -125,3 +127,36 @@ class TestZoomDates:
     def test_missing_percent_ignored(self):
         assert zoom_dates({}, FIRST, LAST) is None
         assert zoom_dates({"start": 10}, FIRST, LAST) is None
+
+
+class TestPresetRanges:
+    def test_last7_is_final_week(self):
+        assert power_flow_preset_range(
+            pd.Timestamp("2024-01-01"), pd.Timestamp("2024-12-31"), "last7"
+        ) == ("2024-12-25", "2024-12-31")
+
+    def test_last7_clamped_to_short_data(self):
+        assert power_flow_preset_range(
+            pd.Timestamp("2024-01-01"), pd.Timestamp("2024-01-03"), "last7"
+        ) == ("2024-01-01", "2024-01-03")
+
+    def test_winter_peak_full_year_shows_december(self):
+        assert power_flow_preset_range(
+            pd.Timestamp("2024-01-01"), pd.Timestamp("2024-12-31"), "winter"
+        ) == ("2024-12-01", "2024-12-31")
+
+    def test_winter_peak_early_year_shows_january(self):
+        assert power_flow_preset_range(
+            pd.Timestamp("2024-01-01"), pd.Timestamp("2024-06-30"), "winter"
+        ) == ("2024-01-01", "2024-01-31")
+
+    def test_winter_peak_without_winter_falls_back_to_all(self):
+        assert power_flow_preset_range(
+            pd.Timestamp("2024-07-01"), pd.Timestamp("2024-11-30"), "winter"
+        ) == ("2024-07-01", "2024-11-30")
+
+    def test_unknown_preset_raises(self):
+        with pytest.raises(ValueError, match="Unknown power flow preset"):
+            power_flow_preset_range(
+                pd.Timestamp("2024-01-01"), pd.Timestamp("2024-12-31"), "summer"
+            )
