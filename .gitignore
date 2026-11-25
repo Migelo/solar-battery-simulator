@@ -12,6 +12,9 @@ multi_scenario_comparison.csv
 power_flow_simulation_results.csv
 system_summary.csv
 data/price_cache/
+multi_scenario_comprehensive_results.csv
+outputs/
+*.prof
 build/
 dist/
 *.spec
