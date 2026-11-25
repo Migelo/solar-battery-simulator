@@ -10,8 +10,11 @@ from solar_battery_simulator.gui import (
     COMPARISON_COLUMNS,
     comparison_csv_bytes,
     comparison_dataframe,
+    comparison_download_name,
     comparison_table_rows,
     comparison_xlsx_bytes,
+    heatmap_download_name,
+    scenario_filename_stem,
 )
 from solar_battery_simulator.simulator import MultiScenarioAnalyzer
 
@@ -101,3 +104,32 @@ def test_xlsx_numeric_with_number_formats(batch_results):
     # Every data cell carries the Slovenian locale tag
     for row in ws.iter_rows(min_row=2):
         assert all(c.number_format.startswith("[$-424]") for c in row)
+
+
+class TestDownloadNames:
+    PARAMS = {"solar_power": 400.0, "inverter_power": 300.0, "battery_capacity": 250.0}
+
+    def test_stem_compacts_floats(self):
+        assert scenario_filename_stem(self.PARAMS) == "400kW_300kW_250kWh"
+
+    def test_stem_empty_when_params_missing(self):
+        assert scenario_filename_stem({}) == ""
+        assert scenario_filename_stem({"solar_power": 400.0}) == ""
+        assert scenario_filename_stem(None) == ""
+
+    def test_comparison_names_include_params(self):
+        assert (
+            comparison_download_name(self.PARAMS, "xlsx")
+            == "scenario_comparison_400kW_300kW_250kWh.xlsx"
+        )
+        assert (
+            comparison_download_name(self.PARAMS, "csv")
+            == "scenario_comparison_400kW_300kW_250kWh.csv"
+        )
+
+    def test_download_names_fall_back_without_params(self):
+        assert comparison_download_name({}, "xlsx") == "scenario_comparison.xlsx"
+        assert heatmap_download_name("savings", None, "csv") == "batch_savings.csv"
+        assert (
+            heatmap_download_name("npv", self.PARAMS, "png") == "batch_npv_400kW_300kW_250kWh.png"
+        )
