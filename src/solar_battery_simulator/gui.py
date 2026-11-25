@@ -2060,6 +2060,11 @@ def index():
                         single_spinner = ui.spinner("dots", size="xl")
                         single_spinner.visible = False
                         single_results = ui.column().classes("w-full")
+    with ui.footer().classes("q-px-md q-py-xs"):
+        ui.label(
+            f"Reading data files from {Path.cwd() / 'data'} "
+            f"(working dir {Path.cwd()}) — put production/consumption files there or upload them above"
+        ).classes("text-caption")
 
 
 def _pick_port(host: str) -> int:
