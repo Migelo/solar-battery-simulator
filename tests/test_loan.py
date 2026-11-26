@@ -60,3 +60,40 @@ def test_loan_npv_unchanged():
 )
 def test_gui_loan_years(params, expected):
     assert _loan_years(params) == expected
+
+
+@pytest.mark.parametrize("loan_years", [10, 20, 25, 30])
+def test_loan_matches_cash_when_loan_rate_equals_discount_rate(loan_years):
+    """Financing at the discount rate is NPV-neutral whatever the loan term."""
+    loan = _analyzer(loan_rate=0.05, loan_years=loan_years)
+    cash = _analyzer(loan_years=0)
+    assert loan.calculate_npv_20_years(10_000, 1_500, 200) == pytest.approx(
+        cash.calculate_npv_20_years(10_000, 1_500, 200)
+    )
+
+
+def test_long_zero_rate_loan_matches_cash_without_discounting():
+    loan = MultiScenarioAnalyzer(
+        solar_range=[10],
+        inverter_range=[10],
+        battery_range=[0],
+        discount_rate=0.0,
+        loan_rate=0.0,
+        loan_years=30,
+    )
+    cash = MultiScenarioAnalyzer(
+        solar_range=[10], inverter_range=[10], battery_range=[0], discount_rate=0.0, loan_years=0
+    )
+    assert loan.calculate_npv_20_years(10_000, 1_500, 200) == pytest.approx(
+        cash.calculate_npv_20_years(10_000, 1_500, 200)
+    )
+
+
+def test_long_expensive_loan_destroys_value_vs_cash():
+    """Debt beyond the horizon is still a liability: r > d must lower NPV."""
+    kwargs = {"solar_range": [10], "inverter_range": [10], "battery_range": [0]}
+    loan = MultiScenarioAnalyzer(**kwargs, discount_rate=0.03, loan_rate=0.06, loan_years=30)
+    cash = MultiScenarioAnalyzer(**kwargs, discount_rate=0.03, loan_years=0)
+    assert loan.calculate_npv_20_years(10_000, 1_500, 200) < cash.calculate_npv_20_years(
+        10_000, 1_500, 200
+    )
