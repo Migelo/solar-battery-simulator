@@ -12,7 +12,7 @@ import socket
 import tempfile
 import threading
 from collections.abc import Awaitable, Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
@@ -841,7 +841,7 @@ BATCH_HEATMAPS = (
         1,
         _YLGN,
     ),
-    HeatmapSpec("npv", "NPV", "npv_20_years", "max", "20-year NPV", "€", 0, _RDYLGN),
+    HeatmapSpec("npv", "NPV", "npv", "max", "NPV", "€", 0, _RDYLGN),  # title gets the horizon
 )
 _PLOT_BG = "#1d1d1d"  # background of downloaded PNGs (chart text is light grey)
 
@@ -1213,6 +1213,7 @@ async def run_batch_analysis(
             discount_rate=params["discount_rate"],
             loan_rate=params["loan_rate"],
             loan_years=_loan_years(params),
+            npv_years=_npv_years(params),
             subsidy=_subsidy_config(params),
             transmission_costs=transmission_costs,
             monthly_power_fees=monthly_power_fees,
@@ -1246,9 +1247,11 @@ async def run_batch_analysis(
 
         # Heatmap grids (rendered client-side as interactive ECharts)
         df = pd.DataFrame(analyzer.results)
-        heatmaps = [
-            (spec, heatmap_grid(df, spec)) for spec in BATCH_HEATMAPS if spec.column in df.columns
+        specs = [
+            replace(s, title=f"{analyzer.npv_years}-year NPV") if s.key == "npv" else s
+            for s in BATCH_HEATMAPS
         ]
+        heatmaps = [(spec, heatmap_grid(df, spec)) for spec in specs if spec.column in df.columns]
 
         comparison_df = comparison_dataframe(analyzer.results)
         return {
@@ -1333,7 +1336,7 @@ COMPARISON_COLUMNS: list[tuple[str, str, int]] = [
     ("Battery (kWh)", "battery_capacity_kwh", 1),
     ("Savings (\u20ac/yr)", "savings_vs_baseline", 0),
     ("Payback (yr)", "payback_years", 1),
-    ("NPV 20yr (\u20ac)", "npv_20_years", 0),
+    ("NPV (\u20ac)", "npv", 0),
     ("Self-Suff (%)", "self_sufficiency_percent", 1),
     ("Investment (\u20ac)", "total_investment", 0),
     ("Subsidy (\u20ac)", "subsidy", 0),
@@ -1512,6 +1515,7 @@ DEFAULTS = {
     "use_loan": True,
     "loan_rate": 0.03,
     "loan_years": 10,
+    "npv_years": 20,
     # One-off investment subsidies (batch)
     "use_subsidies": False,
     "subsidy_solar_enabled": True,
@@ -1559,11 +1563,16 @@ def _subsidy_config(params: dict) -> SubsidyConfig:
     )
 
 
+def _npv_years(params: dict) -> int:
+    """NPV horizon for the analyzer, at least 1 year."""
+    return max(int(params.get("npv_years") or DEFAULTS["npv_years"]), 1)
+
+
 def _loan_years(params: dict) -> int:
-    """Loan term for the analyzer; 0 (cash purchase) when the loan is off or the term is < 1."""
+    """Loan term for the analyzer: 0 (cash) when the loan is off or < 1, at most the horizon."""
     if not params.get("use_loan", True):
         return 0
-    return max(int(params.get("loan_years") or 0), 0)
+    return min(max(int(params.get("loan_years") or 0), 0), _npv_years(params))
 
 
 SIDEBAR_PARAMS_KEY = "sidebar_params_v1"
@@ -1944,18 +1953,35 @@ def _financial_section(inputs):
         use_loan = ui.switch("Use loan", value=DEFAULTS["use_loan"])
         use_loan.tooltip("Off: the investment is paid in cash upfront")
         inputs["use_loan"] = use_loan
-        with ui.grid(columns=3).classes("w-full gap-1"):
+        with ui.grid(columns=2).classes("w-full gap-1"):
             _number("Discount", "discount_rate", inputs, step=0.01).tooltip(
                 "Fraction per year: 0.05 = 5%"
             )
+            npv_years = _number("NPV yrs", "npv_years", inputs, step=1, min=1, precision=0)
+            npv_years.tooltip("NPV horizon in years; the loan term can't be longer")
             loan_rate = _number("Loan rate", "loan_rate", inputs, step=0.01)
             loan_rate.tooltip("Fraction per year: 0.03 = 3%")
-            loan_years = _number("Loan yrs", "loan_years", inputs, step=1, min=0)
+            loan_years = _number(
+                "Loan yrs", "loan_years", inputs, step=1, min=0, max=DEFAULTS["npv_years"]
+            )
             loan_years.tooltip(
-                "Loan term in years; 0 = cash purchase (also used when 'Use loan' is off)"
+                "Loan term in years, at most the NPV years; 0 = cash purchase "
+                "(also used when 'Use loan' is off)"
             )
             loan_rate.bind_enabled_from(use_loan, "value")
             loan_years.bind_enabled_from(use_loan, "value")
+
+        def follow_horizon(_=None) -> None:
+            # Max follows every keystroke; the value is only cut once the horizon is final
+            loan_years.max = _npv_years({"npv_years": npv_years.value})
+
+        def cap_loan_years() -> None:
+            follow_horizon()
+            if loan_years.value is not None and loan_years.value > loan_years.max:
+                loan_years.value = loan_years.max
+
+        npv_years.on_value_change(follow_horizon)
+        npv_years.on("blur", cap_loan_years, [])
     return section
 
 
