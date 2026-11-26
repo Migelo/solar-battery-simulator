@@ -307,6 +307,26 @@ async def test_batch_financial_has_loan_switch(user):
     await user.should_not_see("Use loan")  # Financial is batch-only
 
 
+async def test_data_folder_note_can_be_hidden_and_restored(user):
+    from nicegui import app
+
+    await user.open("/")
+    await user.should_see("Reading data files from")
+    note = user.find(marker="data-note").elements.pop()
+    assert note.value is True
+
+    user.find(marker="hide-data-note").click()
+    assert note.value is False
+    assert app.storage.user[gui.DATA_NOTE_KEY] is False
+
+    await user.open("/")  # the choice survives a reload
+    assert user.find(marker="data-note").elements.pop().value is False
+
+    user.find(marker="toggle-data-note").click()
+    assert user.find(marker="data-note").elements.pop().value is True
+    assert app.storage.user[gui.DATA_NOTE_KEY] is True
+
+
 class TestSharedSidebar:
     """Both tabs use one sidebar; only the tab-specific sections switch."""
 
