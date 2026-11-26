@@ -1576,6 +1576,7 @@ def _loan_years(params: dict) -> int:
 
 
 SIDEBAR_PARAMS_KEY = "sidebar_params_v1"
+DATA_NOTE_KEY = "show_data_note"  # footer with the data folder, hideable per browser
 
 
 def sidebar_params_subset(params: dict) -> dict:
@@ -2141,6 +2142,12 @@ def index():
     inputs: dict = {}
     app.storage.user.setdefault("dark_mode", True)
     ui.dark_mode().bind_value(app.storage.user, "dark_mode")
+    app.storage.user.setdefault(DATA_NOTE_KEY, True)
+
+    def toggle_data_note() -> None:
+        # Flip the footer itself (instant); its binding saves the choice for this browser
+        data_note.value = not data_note.value
+
     # Sidebar sections: outlined boxes with bold titles; hide the uploader's empty file list
     ui.add_css(
         """
@@ -2163,9 +2170,13 @@ def index():
 
     with ui.header().classes("items-center justify-between"):
         ui.label("Solar Battery Simulator").classes("text-h5 text-weight-bold")
-        ui.switch("Dark mode").bind_value(app.storage.user, "dark_mode").props(
-            "keep-color color=grey-6"
-        )
+        with ui.row().classes("items-center gap-2"):
+            ui.button(icon="folder_open", on_click=toggle_data_note).props(
+                "flat round dense color=white"
+            ).tooltip("Show/hide where data files are read from").mark("toggle-data-note")
+            ui.switch("Dark mode").bind_value(app.storage.user, "dark_mode").props(
+                "keep-color color=grey-6"
+            )
 
     with ui.element("div").classes("w-full relative"):
         with ui.tabs().classes("w-full") as tabs:
@@ -2277,11 +2288,19 @@ def index():
                         single_spinner = ui.spinner("dots", size="xl")
                         single_spinner.visible = False
                         single_results = ui.column().classes("w-full")
-    with ui.footer().classes("q-px-md q-py-xs"):
+    with (
+        ui.footer()
+        .classes("q-px-md q-py-xs items-center no-wrap")
+        .bind_value(app.storage.user, DATA_NOTE_KEY)
+        .mark("data-note") as data_note
+    ):
         ui.label(
             f"Reading data files from {Path.cwd() / 'data'} "
             f"(working dir {Path.cwd()}) — put production/consumption files there or upload them above"
-        ).classes("text-caption")
+        ).classes("text-caption col")
+        ui.button(icon="close", on_click=toggle_data_note).props(
+            "flat round dense size=sm color=white"
+        ).tooltip("Hide (the folder icon at the top brings it back)").mark("hide-data-note")
 
 
 def _pick_port(host: str) -> int:
