@@ -2978,7 +2978,8 @@ class MultiScenarioAnalyzer:
 
         With a loan (``loan_years > 0``) the investment is financed: no upfront payment,
         loan payments during the loan term. Without a loan (``loan_years <= 0``) the
-        investment is paid in cash at year 0.
+        investment is paid in cash at year 0. A loan term beyond the 20-year horizon
+        still leaves debt at year 20, so the discounted remaining balance is subtracted.
         """
         annual_loan_payment = self.calculate_loan_payment(total_investment)
         npv = 0.0 if self.loan_years > 0 else -total_investment
@@ -2987,6 +2988,18 @@ class MultiScenarioAnalyzer:
             if year <= self.loan_years:
                 cash_flow -= annual_loan_payment
             npv += cash_flow / ((1 + self.discount_rate) ** year)
+        if self.loan_years > 20 and annual_loan_payment > 0:
+            # Debt outliving the horizon is still a liability at year 20.
+            remaining_years = self.loan_years - 20
+            if self.loan_rate == 0:
+                balance = annual_loan_payment * remaining_years
+            else:
+                balance = (
+                    annual_loan_payment
+                    * (1 - (1 + self.loan_rate) ** -remaining_years)
+                    / self.loan_rate
+                )
+            npv -= balance / ((1 + self.discount_rate) ** 20)
         return npv
 
     def optimize_npv_differential_evolution(
