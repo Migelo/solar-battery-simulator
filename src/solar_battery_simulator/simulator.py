@@ -29,7 +29,7 @@ Output Files Generated (all inside ``--out-dir``, default ``outputs/run-YYYYMMDD
         - multi_scenario_savings_heatmap.png: Annual savings across configurations
         - multi_scenario_roi_heatmap.png: Payback period analysis
         - multi_scenario_self_sufficiency_heatmap.png: Energy independence analysis
-        - multi_scenario_npv_heatmap.png: 20-year NPV across configurations
+        - multi_scenario_npv_heatmap.png: NPV (--npv-years horizon) across configurations
         - multi_scenario_pareto_analysis.png: Investment vs savings optimization
         - multi_scenario_comprehensive_results.xlsx (or .csv): Complete results dataset
 
@@ -1862,6 +1862,7 @@ class MultiScenarioAnalyzer:
         discount_rate: float = 0.05,
         loan_rate: float = 0.03,
         loan_years: int = 10,
+        npv_years: int = 20,
         production_file: str = "data/production.csv",
         consumption_file: str = "data/consumption.csv",
         transmission_costs: dict[str, float] = None,
@@ -1897,6 +1898,7 @@ class MultiScenarioAnalyzer:
             discount_rate (float): Annual discount rate for NPV calculations (default: 0.05 = 5%)
             loan_rate (float): Annual loan interest rate (default: 0.03 = 3%)
             loan_years (int): Loan term in years; 0 = no loan, paid in cash (default: 10)
+            npv_years (int): NPV horizon in years; loan_years may not exceed it (default: 20)
             transmission_costs (Dict[str, float]): Transmission costs by block (block1-block5)
             heating_config (dict): Heating load configuration with keys:
                 - heating_kwh (float): Total heating energy for season in kWh
@@ -1927,7 +1929,12 @@ class MultiScenarioAnalyzer:
         self.battery_maintenance_fee_per_kwh = battery_maintenance_fee_per_kwh
         self.discount_rate = discount_rate
         self.loan_rate = loan_rate
+        if npv_years < 1:
+            raise ValueError(f"npv_years must be at least 1, got {npv_years}")
+        if loan_years > npv_years:
+            raise ValueError(f"loan_years ({loan_years}) may not exceed npv_years ({npv_years})")
         self.loan_years = loan_years
+        self.npv_years = int(npv_years)
         self.subsidy = subsidy or SubsidyConfig()
         self.production_file = production_file
         self.consumption_file = consumption_file
@@ -2144,9 +2151,7 @@ class MultiScenarioAnalyzer:
             # Net annual cash flow = savings - maintenance - loan payments
             net_annual_cash_flow = annual_savings - annual_maintenance_cost - annual_loan_payment
 
-            npv_20_years = self.calculate_npv_20_years(
-                total_investment, annual_savings, annual_maintenance_cost
-            )
+            npv = self.calculate_npv(total_investment, annual_savings, annual_maintenance_cost)
 
             # Calculate key metrics
             total_consumption = simulation_results["consumption_kwh"].sum()
@@ -2165,7 +2170,8 @@ class MultiScenarioAnalyzer:
                 "annual_maintenance_cost": annual_maintenance_cost,
                 "net_annual_cash_flow": net_annual_cash_flow,
                 "annual_loan_payment": annual_loan_payment,
-                "npv_20_years": npv_20_years,
+                "npv": npv,
+                "npv_years": self.npv_years,
                 "discount_rate": self.discount_rate,
                 "annual_solar_generation": total_solar,
                 "annual_consumption": total_consumption,
@@ -2435,7 +2441,7 @@ class MultiScenarioAnalyzer:
         return path
 
     def create_npv_heatmap(self, output_dir: str | Path | None = None) -> str | None:
-        """Create heatmap of Net Present Value over 20 years"""
+        """Create heatmap of Net Present Value over the ``npv_years`` horizon"""
         import matplotlib.pyplot as plt
         import seaborn as sns
 
@@ -2449,12 +2455,12 @@ class MultiScenarioAnalyzer:
         df = pd.DataFrame(self.results)
 
         # Find the optimal inverter power for each solar/battery combination
-        idx = df.groupby(["battery_capacity_kwh", "solar_panel_power_kw"])["npv_20_years"].idxmax()
+        idx = df.groupby(["battery_capacity_kwh", "solar_panel_power_kw"])["npv"].idxmax()
         optimal_scenarios = df.loc[idx]
 
         # Create pivot tables for NPV and optimal inverter power
         pivot_npv = optimal_scenarios.pivot_table(
-            values="npv_20_years",
+            values="npv",
             index="battery_capacity_kwh",
             columns="solar_panel_power_kw",
             aggfunc="first",
@@ -2516,7 +2522,7 @@ class MultiScenarioAnalyzer:
             )
 
         plt.title(
-            f"NPV Heatmap (20 years, {self.discount_rate * 100:.1f}% discount rate)\n"
+            f"NPV Heatmap ({self.npv_years} years, {self.discount_rate * 100:.1f}% discount rate)\n"
             f"Maintenance: €{self.maintenance_fee_per_kw}/kW/year + €{self.battery_maintenance_fee_per_kwh}/kWh/year, Solar: €{self.solar_cost_per_kw}/kW, Inverter: €{self.inverter_cost_per_kw}/kW, Battery: €{self.battery_cost_per_kwh}/kWh\n"
             f"Values show: NPV (Optimal Inverter Power)",
             fontsize=14,
@@ -2970,19 +2976,19 @@ class MultiScenarioAnalyzer:
         n = self.loan_years
         return principal * (r * (1 + r) ** n) / ((1 + r) ** n - 1)
 
-    def calculate_npv_20_years(
+    def calculate_npv(
         self, total_investment: float, annual_savings: float, annual_maintenance_cost: float
     ) -> float:
         """
-        20-year NPV of the system.
+        NPV of the system over ``npv_years``.
 
         With a loan (``loan_years > 0``) the investment is financed: no upfront payment,
-        loan payments during the loan term. Without a loan (``loan_years <= 0``) the
-        investment is paid in cash at year 0.
+        loan payments during the loan term, which never outlasts the horizon. Without a loan
+        (``loan_years <= 0``) the investment is paid in cash at year 0.
         """
         annual_loan_payment = self.calculate_loan_payment(total_investment)
         npv = 0.0 if self.loan_years > 0 else -total_investment
-        for year in range(1, 21):
+        for year in range(1, self.npv_years + 1):
             cash_flow = annual_savings - annual_maintenance_cost
             if year <= self.loan_years:
                 cash_flow -= annual_loan_payment
@@ -3000,7 +3006,7 @@ class MultiScenarioAnalyzer:
     ) -> dict[str, Any]:
         """
         Use scipy's differential evolution to find optimal solar + battery configuration
-        that maximizes Net Present Value (NPV) over 20 years.
+        that maximizes Net Present Value (NPV) over ``npv_years``.
 
         Args:
             maxiter: Maximum number of iterations (default: 1000)
@@ -3024,7 +3030,7 @@ class MultiScenarioAnalyzer:
         print("  - Block 1 max power: 200-500 kW (50kW steps)")
         print("  - Block 2 max power: 250-550 kW (50kW steps, ≥ Block 1)")
         print("  - Min SOC reserve: 10-80% (5% steps)")
-        print("  - Objective: Maximize 20-year NPV")
+        print(f"  - Objective: Maximize {self.npv_years}-year NPV")
         print("\nOptimization parameters:")
         print(f"  - Max iterations: {maxiter}")
         print(f"  - Population size: {popsize} × 6 = {popsize * 6}")
@@ -3138,18 +3144,16 @@ class MultiScenarioAnalyzer:
                     + annual_battery_maintenance
                     + annual_general_one_percent_maintenance
                 )
-                npv_20_years = self.calculate_npv_20_years(
-                    total_investment, annual_savings, annual_maintenance_cost
-                )
+                npv = self.calculate_npv(total_investment, annual_savings, annual_maintenance_cost)
 
                 # Track best solution
-                if npv_20_years > self._best_npv:
-                    self._best_npv = npv_20_years
+                if npv > self._best_npv:
+                    self._best_npv = npv
                     self._best_config = {
                         "solar_kw": solar_kw,
                         "inverter_kw": inverter_kw,
                         "battery_kwh": battery_kwh,
-                        "npv": npv_20_years,
+                        "npv": npv,
                         "annual_savings": annual_savings,
                         "investment": total_investment,
                     }
@@ -3159,12 +3163,12 @@ class MultiScenarioAnalyzer:
                     self._evolution_history["best_solar"].append(solar_kw)
                     self._evolution_history["best_inverter"].append(inverter_kw)
                     self._evolution_history["best_battery"].append(battery_kwh)
-                    self._evolution_history["best_npv"].append(npv_20_years)
+                    self._evolution_history["best_npv"].append(npv)
 
                 if verbose and self._eval_count % 50 == 0:
                     print(f"  Evaluation {self._eval_count}: Best NPV = €{self._best_npv:,.0f}")
 
-                return -npv_20_years  # Minimize negative NPV (maximize NPV)
+                return -npv  # Minimize negative NPV (maximize NPV)
 
             except Exception as e:
                 if verbose and self._eval_count % 100 == 0:
@@ -3788,6 +3792,12 @@ def main():
         default=10,
         help="Loan term in years; 0 = no loan, paid in cash (default: 10)",
     )
+    parser.add_argument(
+        "--npv-years",
+        type=int,
+        default=20,
+        help="NPV horizon in years; --loan-years may not exceed it (default: 20)",
+    )
 
     # One-off investment subsidies (each one is enabled by giving it a rate > 0)
     parser.add_argument(
@@ -3917,6 +3927,12 @@ def main():
     args = parser.parse_args()
     if tariff_error := _manual_tariff_flags_error(args):
         parser.error(tariff_error)
+    if args.npv_years < 1:
+        parser.error("--npv-years must be at least 1")
+    if args.loan_years > args.npv_years:
+        parser.error(
+            f"--loan-years ({args.loan_years}) may not exceed --npv-years ({args.npv_years})"
+        )
 
     out_dir = prepare_out_dir(args.out_dir or default_out_dir(), overwrite=args.overwrite)
     print(f"Output directory: {out_dir}")
@@ -4018,6 +4034,7 @@ def main():
             discount_rate=args.discount_rate,
             loan_rate=args.loan_rate,
             loan_years=args.loan_years,
+            npv_years=args.npv_years,
             subsidy=_cli_subsidy(args),
             enable_power_smoothing=args.enable_power_smoothing,
             min_soc_reserve=args.min_soc_reserve,

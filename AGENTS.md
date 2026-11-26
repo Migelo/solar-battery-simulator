@@ -46,7 +46,9 @@ hence absolute imports and the `if __name__ in {"__main__", "__mp_main__"}` guar
   on the same fingerprint) and replays their console output; `load_and_align_data` copies the
   frame, so never mutate the cached one.
 - **Investment**: `total_investment` = gross − subsidy drives payback, loan and NPV; maintenance
-  (1 %) stays on gross. `loan_years <= 0` = cash at year 0.
+  (1 %) stays on gross. `loan_years <= 0` = cash at year 0. NPV horizon is `npv_years`
+  (default 20, result column `npv`); `loan_years > npv_years` is rejected (engine, CLI) or
+  capped (GUI), so no debt outlives the horizon.
 - **Tariffs**: 5 blocks, high season Nov–Mar; OVE-SPTE = `4 × Block1_max + 8 × Block2_max`.
   `--transmission-block*`/`--power-fee-block*` require `--tariff-group manual`.
 - **GUI**: one shared sidebar `inputs` dict for both tabs (`_only_on()` hides tab-specific

@@ -27,7 +27,7 @@ def _results():
             "savings_vs_baseline": [100.0, 150.0, 200.0, 250.0, 300.0, 280.0],
             "payback_years": [5.0, float("inf"), 7.0, 6.0, 30.0, 25.0],
             "self_sufficiency_percent": [10.0, 12.0, 20.0, 21.0, 30.0, 29.0],
-            "npv_20_years": [1000.0, -50.0, 2000.0, 2100.0, 3000.0, 2900.0],
+            "npv": [1000.0, -50.0, 2000.0, 2100.0, 3000.0, 2900.0],
         }
     )
 
@@ -82,7 +82,7 @@ def test_csv_is_slovenian_grid():
 
 def test_missing_values_dropped():
     df = _results()
-    df["npv_20_years"] = float("nan")
+    df["npv"] = float("nan")
     assert heatmap_grid(df, SPECS["npv"]).empty
 
 

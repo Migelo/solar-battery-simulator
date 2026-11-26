@@ -124,7 +124,7 @@ class TestAnalyzerInvestment:
         assert s["subsidy"] == 2000
         assert s["total_investment"] == b["total_investment"] - 2000
         # Cash purchase: NPV improves by exactly the subsidy (maintenance is on gross value)
-        assert s["npv_20_years"] == pytest.approx(b["npv_20_years"] + 2000)
+        assert s["npv"] == pytest.approx(b["npv"] + 2000)
         assert s["annual_maintenance_cost"] == pytest.approx(b["annual_maintenance_cost"])
         if b["savings_vs_baseline"] > 0:
             assert s["payback_years"] < b["payback_years"]
